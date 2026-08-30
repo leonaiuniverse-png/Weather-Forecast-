@@ -25,7 +25,22 @@ data class ForecastResponse(
     @Json(name = "longitude") val longitude: Double? = null,
     @Json(name = "current") val current: CurrentWeatherDto? = null,
     @Json(name = "hourly") val hourly: HourlyWeatherDto? = null,
-    @Json(name = "daily") val daily: DailyWeatherDto? = null
+    @Json(name = "daily") val daily: DailyWeatherDto? = null,
+    @Json(name = "alerts") val alerts: List<AlertDto>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class AlertDto(
+    @Json(name = "id") val id: String? = null,
+    @Json(name = "event") val event: String? = null,
+    @Json(name = "headline") val headline: String? = null,
+    @Json(name = "description") val description: String? = null,
+    @Json(name = "severity") val severity: String? = null,
+    @Json(name = "urgency") val urgency: String? = null,
+    @Json(name = "effective") val effective: String? = null,
+    @Json(name = "expires") val expires: String? = null,
+    @Json(name = "instruction") val instruction: String? = null,
+    @Json(name = "area") val area: String? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -63,6 +78,15 @@ data class DailyWeatherDto(
 
 // UI Domain Models
 
+data class LunarPhaseInfo(
+    val phaseName: String,
+    val illuminationPct: Int, // 0 to 100
+    val phaseProgress: Float, // 0.0 (New Moon) to 0.5 (Full Moon) to 1.0
+    val isWaxing: Boolean,
+    val moonAgeDays: Double,
+    val nextPhaseSummary: String
+)
+
 data class SunCycleInfo(
     val sunriseIso: String,
     val sunsetIso: String,
@@ -71,7 +95,8 @@ data class SunCycleInfo(
     val daylightDurationFormatted: String,
     val solarProgress: Float, // 0.0f (sunrise) to 1.0f (sunset), clamped or cycle-relative
     val isDaytime: Boolean,
-    val solarStatus: String
+    val solarStatus: String,
+    val lunarPhase: LunarPhaseInfo? = null
 )
 
 data class HourlyForecastItem(
@@ -109,4 +134,26 @@ data class WeatherConditionInfo(
     val type: WeatherConditionType,
     val description: String,
     val isDay: Boolean = true
+)
+
+enum class AlertSeverity {
+    CRITICAL,
+    WARNING,
+    ADVISORY,
+    WATCH
+}
+
+data class SevereWeatherAlert(
+    val id: String,
+    val event: String,
+    val headline: String,
+    val description: String,
+    val severity: AlertSeverity = AlertSeverity.CRITICAL,
+    val urgency: String = "Immediate",
+    val effectiveTimeFormatted: String? = null,
+    val expiresTimeFormatted: String? = null,
+    val instruction: String? = null,
+    val senderName: String = "National Meteorological Agency",
+    val areaDesc: String? = null,
+    val isCritical: Boolean = true
 )

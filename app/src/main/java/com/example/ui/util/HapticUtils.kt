@@ -25,6 +25,17 @@ object HapticUtils {
     }
 
     /**
+     * Haptic feedback when pull-to-refresh triggers.
+     */
+    fun performRefresh(view: View?) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            view?.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
+        } else {
+            view?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
+    }
+
+    /**
      * Confirmatory feedback when weather dashboard updates or finishes refreshing.
      */
     fun performUpdateSuccess(view: View?) {

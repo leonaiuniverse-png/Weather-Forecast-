@@ -1,22 +1,33 @@
 package com.example.data.repository
 
+import android.content.Context
+import android.util.Log
 import com.example.BuildConfig
 import com.example.data.api.ApiClient
 import com.example.data.api.GeminiContent
 import com.example.data.api.GeminiGenerateRequest
 import com.example.data.api.GeminiPart
+import com.example.data.alert.AlertStateManager
+import com.example.data.db.WeatherCacheEntity
+import com.example.data.db.WeatherDatabase
+import com.example.data.model.AlertSeverity
 import com.example.data.model.DailyForecastItem
 import com.example.data.model.ForecastResponse
 import com.example.data.model.GeocodingResult
 import com.example.data.model.HourlyForecastItem
+import com.example.data.model.SevereWeatherAlert
 import com.example.data.model.WeatherConditionInfo
 import com.example.data.model.WeatherConditionType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.roundToInt
 
 data class CompleteWeatherData(
     val city: GeocodingResult,
@@ -35,12 +46,58 @@ data class CompleteWeatherData(
     val hourlyList: List<HourlyForecastItem>,
     val dailyList: List<DailyForecastItem>,
     val sunCycle: com.example.data.model.SunCycleInfo,
-    val aiBriefing: String
+    val aiBriefing: String,
+    val activeAlerts: List<SevereWeatherAlert> = emptyList(),
+    val lastSyncTimestamp: Long = System.currentTimeMillis(),
+    val isFromCache: Boolean = false,
+    val syncSource: String = "FOREGROUND"
 )
 
 class WeatherRepository {
     private val openMeteo = ApiClient.openMeteoService
     private val gemini = ApiClient.geminiService
+
+    suspend fun getCachedWeather(context: Context, city: GeocodingResult): CompleteWeatherData? = withContext(Dispatchers.IO) {
+        try {
+            val db = WeatherDatabase.getInstance(context)
+            val cityKey = WeatherCacheEntity.createCityKey(city)
+            val entity = db.weatherDao().getWeatherForCity(cityKey) ?: db.weatherDao().getLatestWeather()
+            entity?.toCompleteWeatherData()
+        } catch (e: Exception) {
+            Log.e("WeatherRepository", "Failed to load cached weather: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun getLatestCachedWeather(context: Context): CompleteWeatherData? = withContext(Dispatchers.IO) {
+        try {
+            val db = WeatherDatabase.getInstance(context)
+            val entity = db.weatherDao().getLatestWeather()
+            entity?.toCompleteWeatherData()
+        } catch (e: Exception) {
+            Log.e("WeatherRepository", "Failed to load latest cached weather: ${e.message}")
+            null
+        }
+    }
+
+    fun observeCachedWeather(context: Context, city: GeocodingResult): Flow<CompleteWeatherData?> {
+        val db = WeatherDatabase.getInstance(context)
+        val cityKey = WeatherCacheEntity.createCityKey(city)
+        return db.weatherDao().getWeatherForCityFlow(cityKey).map { entity ->
+            entity?.toCompleteWeatherData()
+        }
+    }
+
+    suspend fun cacheWeatherData(context: Context, data: CompleteWeatherData, syncSource: String = "BACKGROUND_WORKER") = withContext(Dispatchers.IO) {
+        try {
+            val db = WeatherDatabase.getInstance(context)
+            val entity = WeatherCacheEntity.fromCompleteWeatherData(data, syncSource)
+            db.weatherDao().insertWeather(entity)
+            Log.d("WeatherRepository", "Successfully persisted weather to Room cache for ${data.city.name} (Source: $syncSource).")
+        } catch (e: Exception) {
+            Log.e("WeatherRepository", "Failed to cache weather data in Room: ${e.message}", e)
+        }
+    }
 
     suspend fun searchCities(query: String): List<GeocodingResult> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
@@ -83,6 +140,22 @@ class WeatherRepository {
 
         val condition = mapWeatherCode(weatherCode, isDay = sunCycle.isDaytime)
 
+        // Parse and detect active severe weather alerts
+        val activeAlerts = detectSevereAlerts(
+            city = city,
+            forecast = forecast,
+            currentTempC = currentTemp,
+            windSpeedKmh = windSpeed,
+            precipMm = precipitation,
+            weatherCode = weatherCode,
+            maxTempC = todayMax,
+            minTempC = todayMin,
+            maxUv = currentUv
+        )
+
+        // Post the primary alert to shared AlertStateManager
+        AlertStateManager.postAlert(activeAlerts.firstOrNull())
+
         // Generate Sky Intelligence briefing
         val briefing = generateSkyIntelligence(
             cityName = city.name,
@@ -113,8 +186,189 @@ class WeatherRepository {
             hourlyList = hourlyList,
             dailyList = dailyList,
             sunCycle = sunCycle,
-            aiBriefing = briefing
-        )
+            aiBriefing = briefing,
+            activeAlerts = activeAlerts
+        ).also {
+            // Synchronize top active alert to AlertStateManager
+            if (activeAlerts.isNotEmpty()) {
+                AlertStateManager.postAlert(activeAlerts.first())
+            } else {
+                AlertStateManager.clearAlert()
+            }
+        }
+    }
+
+    /**
+     * Detects and constructs severe weather alerts from both Open-Meteo alerts DTOs
+     * and real-time atmospheric threshold evaluations (convective storms, gales, floods, extreme temps).
+     */
+    fun detectSevereAlerts(
+        city: GeocodingResult,
+        forecast: ForecastResponse,
+        currentTempC: Double,
+        windSpeedKmh: Double,
+        precipMm: Double,
+        weatherCode: Int,
+        maxTempC: Double,
+        minTempC: Double,
+        maxUv: Double
+    ): List<SevereWeatherAlert> {
+        val alerts = mutableListOf<SevereWeatherAlert>()
+
+        // 1. Process external alerts returned from Open-Meteo API (if any)
+        forecast.alerts?.forEachIndexed { index, dto ->
+            val event = dto.event?.takeIf { it.isNotBlank() } ?: "Severe Weather Advisory"
+            val headline = dto.headline?.takeIf { it.isNotBlank() } ?: "$event active for ${city.name}"
+            val desc = dto.description?.takeIf { it.isNotBlank() } ?: "Hazardous weather conditions reported in this region."
+            val severity = when (dto.severity?.lowercase(Locale.ROOT)) {
+                "extreme", "severe", "critical" -> AlertSeverity.CRITICAL
+                "warning", "moderate" -> AlertSeverity.WARNING
+                "watch" -> AlertSeverity.WATCH
+                else -> AlertSeverity.ADVISORY
+            }
+            alerts.add(
+                SevereWeatherAlert(
+                    id = dto.id ?: "om_alert_${city.name}_$index",
+                    event = event,
+                    headline = headline,
+                    description = desc,
+                    severity = severity,
+                    urgency = dto.urgency ?: "Immediate",
+                    effectiveTimeFormatted = dto.effective,
+                    expiresTimeFormatted = dto.expires,
+                    instruction = dto.instruction ?: "Follow directions from local emergency management authorities.",
+                    senderName = "National Weather & Meteorological Service",
+                    areaDesc = dto.area ?: "${city.name} Region",
+                    isCritical = severity == AlertSeverity.CRITICAL || severity == AlertSeverity.WARNING
+                )
+            )
+        }
+
+        // 2. Convective Thunderstorm & Damaging Hail Hazard
+        if (weatherCode in listOf(95, 96, 99)) {
+            val isHail = weatherCode == 99 || weatherCode == 96
+            alerts.add(
+                SevereWeatherAlert(
+                    id = "severe_tstorm_${city.name}",
+                    event = if (isHail) "Severe Thunderstorm & Hail Warning" else "Severe Thunderstorm Warning",
+                    headline = if (isHail) "Severe Convective Thunderstorm with Hail Risk in ${city.name}" else "Dangerous Thunderstorm Activity in ${city.name}",
+                    description = "Atmospheric radar shows active convective cells with violent lightning discharges, localized downpours, and potential for damaging hail.",
+                    severity = AlertSeverity.CRITICAL,
+                    urgency = "Immediate",
+                    instruction = "Seek shelter inside a sturdy building immediately. Stay clear of exterior windows and avoid using corded electrical devices.",
+                    senderName = "Severe Storm Prediction Center",
+                    areaDesc = "${city.name} and adjacent metro zones",
+                    isCritical = true
+                )
+            )
+        }
+
+        // 3. Gale Force Wind Hazard
+        if (windSpeedKmh >= 55.0) {
+            alerts.add(
+                SevereWeatherAlert(
+                    id = "gale_wind_${city.name}",
+                    event = "Gale Force High Wind Warning",
+                    headline = "Sustained High Winds & Dangerous Gusts of ${windSpeedKmh.toInt()} km/h",
+                    description = "High wind velocity can uproot trees, bring down overhead utility lines, and create severe driving hazards for high-profile vehicles.",
+                    severity = AlertSeverity.CRITICAL,
+                    urgency = "Immediate",
+                    instruction = "Anchor outdoor loose items. Exercise extreme caution when driving near bridges and open terrain.",
+                    senderName = "National Weather Hazard Center",
+                    areaDesc = "${city.name} Valley & Ridge Corridors",
+                    isCritical = true
+                )
+            )
+        } else if (windSpeedKmh >= 42.0) {
+            alerts.add(
+                SevereWeatherAlert(
+                    id = "wind_advisory_${city.name}",
+                    event = "Wind Advisory",
+                    headline = "Brisk Winds with Gusts Reaching ${windSpeedKmh.toInt()} km/h",
+                    description = "Elevated wind speeds may cause difficulty driving and minor debris displacement.",
+                    severity = AlertSeverity.ADVISORY,
+                    urgency = "Expected",
+                    instruction = "Secure patio furniture and monitor local wind forecasts.",
+                    senderName = "National Weather Hazard Center",
+                    areaDesc = "${city.name} Metro",
+                    isCritical = false
+                )
+            )
+        }
+
+        // 4. Torrential Rain & Flash Flood Hazard
+        if (precipMm >= 15.0 || weatherCode in listOf(65, 82)) {
+            alerts.add(
+                SevereWeatherAlert(
+                    id = "flash_flood_${city.name}",
+                    event = "Flash Flood & Torrential Rain Warning",
+                    headline = "Severe Precipitation Rate Exceeding Runoff Capacity",
+                    description = "Intense rain rate (${precipMm} mm/h) causing rapid water accumulation, urban street inundation, and low-lying creek swelling.",
+                    severity = AlertSeverity.CRITICAL,
+                    urgency = "Immediate",
+                    instruction = "Never attempt to walk or drive through flood waters ('Turn Around, Don't Drown'). Move to higher elevation if threatened.",
+                    senderName = "Hydrometeorological Center",
+                    areaDesc = "${city.name} Low-Lying Basins",
+                    isCritical = true
+                )
+            )
+        }
+
+        // 5. Heavy Snow & Blizzard Warning
+        if (weatherCode in listOf(75, 86)) {
+            alerts.add(
+                SevereWeatherAlert(
+                    id = "blizzard_${city.name}",
+                    event = "Blizzard & Heavy Snowfall Warning",
+                    headline = "Heavy Snow Accumulation & Substantially Reduced Visibility",
+                    description = "Severe snowfall rates creating treacherous icy roadways and whiteout conditions.",
+                    severity = AlertSeverity.CRITICAL,
+                    urgency = "Immediate",
+                    instruction = "Avoid unnecessary vehicular travel. Keep cold-weather emergency survival gear ready.",
+                    senderName = "Winter Storm Warning Agency",
+                    areaDesc = "${city.name} Regional Arteries",
+                    isCritical = true
+                )
+            )
+        }
+
+        // 6. Excessive Heat Warning
+        if (maxTempC >= 38.0 || currentTempC >= 38.0) {
+            alerts.add(
+                SevereWeatherAlert(
+                    id = "extreme_heat_${city.name}",
+                    event = "Excessive Heat Warning",
+                    headline = "Dangerous Peak Heat Reaching ${maxTempC.toInt()}°C (${(maxTempC * 9/5 + 32).toInt()}°F)",
+                    description = "Extreme heat index values increase the incidence of heat stroke and heat exhaustion under direct sun exposure.",
+                    severity = AlertSeverity.WARNING,
+                    urgency = "Immediate",
+                    instruction = "Stay hydrated, limit strenuous outdoor activities during peak afternoon hours, and stay in air-conditioned environments.",
+                    senderName = "Public Health & Climate Center",
+                    areaDesc = "${city.name} Urban Area",
+                    isCritical = false
+                )
+            )
+        }
+
+        // 7. Hard Freeze & Sub-Zero Cold
+        if (minTempC <= -15.0 || currentTempC <= -15.0) {
+            alerts.add(
+                SevereWeatherAlert(
+                    id = "hard_freeze_${city.name}",
+                    event = "Hard Freeze & Extreme Cold Warning",
+                    headline = "Sub-Zero Temperatures of ${minTempC.toInt()}°C (${(minTempC * 9/5 + 32).toInt()}°F)",
+                    description = "Dangerous wind chills can cause frostbite on exposed skin in less than 30 minutes. Exposed pipes may freeze and rupture.",
+                    severity = AlertSeverity.WARNING,
+                    urgency = "Immediate",
+                    instruction = "Cover exposed skin, bring companion animals indoors, and protect residential plumbing.",
+                    senderName = "Public Health & Climate Center",
+                    areaDesc = "${city.name} Region",
+                    isCritical = false
+                )
+            )
+        }
+
+        return alerts
     }
 
     private fun parseSunCycle(forecast: ForecastResponse): com.example.data.model.SunCycleInfo {
@@ -173,6 +427,8 @@ class WeatherRepository {
             }
         }
 
+        val lunarPhase = calculateLunarPhase(nowMillis)
+
         return com.example.data.model.SunCycleInfo(
             sunriseIso = rawSunrise,
             sunsetIso = rawSunset,
@@ -181,7 +437,67 @@ class WeatherRepository {
             daylightDurationFormatted = daylightFormatted,
             solarProgress = solarProgress,
             isDaytime = isDaytime,
-            solarStatus = solarStatus
+            solarStatus = solarStatus,
+            lunarPhase = lunarPhase
+        )
+    }
+
+    fun calculateLunarPhase(nowMillis: Long = System.currentTimeMillis()): com.example.data.model.LunarPhaseInfo {
+        val synodicMonthDays = 29.530588853
+        val synodicMonthMillis = synodicMonthDays * 86400000.0
+        
+        // Known reference New Moon epoch: Jan 11, 2024, 11:57 UTC
+        val referenceNewMoonMillis = 1704974220000L
+        
+        val diffMillis = (nowMillis - referenceNewMoonMillis).toDouble()
+        val cycleNormalizedMillis = ((diffMillis % synodicMonthMillis) + synodicMonthMillis) % synodicMonthMillis
+        val moonAgeDays = cycleNormalizedMillis / 86400000.0
+        val phaseProgress = (moonAgeDays / synodicMonthDays).toFloat().coerceIn(0f, 1f)
+        
+        // Illumination formula: (1 - cos(2 * PI * phaseProgress)) / 2
+        val phaseAngleRad = 2.0 * Math.PI * phaseProgress
+        val illuminationFraction = (1.0 - cos(phaseAngleRad)) / 2.0
+        val illuminationPct = (illuminationFraction * 100.0).roundToInt().coerceIn(0, 100)
+        
+        val isWaxing = phaseProgress < 0.5f
+        
+        val phaseName = when {
+            phaseProgress < 0.02f || phaseProgress >= 0.98f -> "New Moon"
+            phaseProgress < 0.23f -> "Waxing Crescent"
+            phaseProgress < 0.27f -> "First Quarter"
+            phaseProgress < 0.48f -> "Waxing Gibbous"
+            phaseProgress < 0.52f -> "Full Moon"
+            phaseProgress < 0.73f -> "Waning Gibbous"
+            phaseProgress < 0.77f -> "Last Quarter"
+            else -> "Waning Crescent"
+        }
+        
+        val nextMilestone = when {
+            phaseProgress < 0.25f -> {
+                val d = ((0.25 - phaseProgress) * synodicMonthDays).roundToInt().coerceAtLeast(1)
+                "First Quarter in ${d}d"
+            }
+            phaseProgress < 0.50f -> {
+                val d = ((0.50 - phaseProgress) * synodicMonthDays).roundToInt().coerceAtLeast(1)
+                "Full Moon in ${d}d"
+            }
+            phaseProgress < 0.75f -> {
+                val d = ((0.75 - phaseProgress) * synodicMonthDays).roundToInt().coerceAtLeast(1)
+                "Last Quarter in ${d}d"
+            }
+            else -> {
+                val d = ((1.0 - phaseProgress) * synodicMonthDays).roundToInt().coerceAtLeast(1)
+                "New Moon in ${d}d"
+            }
+        }
+        
+        return com.example.data.model.LunarPhaseInfo(
+            phaseName = phaseName,
+            illuminationPct = illuminationPct,
+            phaseProgress = phaseProgress,
+            isWaxing = isWaxing,
+            moonAgeDays = ((moonAgeDays * 10).roundToInt()) / 10.0,
+            nextPhaseSummary = nextMilestone
         )
     }
 
@@ -331,6 +647,158 @@ class WeatherRepository {
 
         // High-fidelity local rule-based meteorological briefing
         return generateLocalBriefing(cityName, tempC, conditionTitle, precipProb, windSpeed, uvIndex, hourlyNext12h)
+    }
+
+    suspend fun askGeminiWeatherQuestion(
+        question: String,
+        weather: CompleteWeatherData,
+        isFahrenheit: Boolean
+    ): String = withContext(Dispatchers.IO) {
+        val trimmedQuery = question.trim()
+        if (trimmedQuery.isBlank()) return@withContext "Please ask a weather question to get Gemini Sky Intelligence."
+
+        val tempUnit = if (isFahrenheit) "°F" else "°C"
+        val speedUnit = if (isFahrenheit) "mph" else "km/h"
+        val displayTemp = if (isFahrenheit) ((weather.currentTempC * 9 / 5) + 32).toInt() else weather.currentTempC.toInt()
+        val displayFeels = if (isFahrenheit) ((weather.apparentTempC * 9 / 5) + 32).toInt() else weather.apparentTempC.toInt()
+        val displayHigh = if (isFahrenheit) ((weather.todayMaxTempC * 9 / 5) + 32).toInt() else weather.todayMaxTempC.toInt()
+        val displayLow = if (isFahrenheit) ((weather.todayMinTempC * 9 / 5) + 32).toInt() else weather.todayMinTempC.toInt()
+        val displayWind = if (isFahrenheit) (weather.windSpeedKmh * 0.621371).toInt() else weather.windSpeedKmh.toInt()
+
+        val hourlySummary = weather.hourlyList.take(12).joinToString(", ") {
+            val hTemp = if (isFahrenheit) ((it.tempC * 9 / 5) + 32).toInt() else it.tempC.toInt()
+            "${it.hourLabel}: $hTemp$tempUnit (${it.precipitationProb}% rain)"
+        }
+
+        val dailySummary = weather.dailyList.take(5).joinToString(", ") {
+            val dMax = if (isFahrenheit) ((it.maxTempC * 9 / 5) + 32).toInt() else it.maxTempC.toInt()
+            val dMin = if (isFahrenheit) ((it.minTempC * 9 / 5) + 32).toInt() else it.minTempC.toInt()
+            "${it.dayLabel}: high $dMax$tempUnit / low $dMin$tempUnit (${it.precipitationProb}% rain)"
+        }
+
+        val weatherTelemetry = """
+            City: ${weather.city.name} (${weather.city.countryCode ?: weather.city.country})
+            Current Condition: ${weather.condition.title} (${weather.condition.description})
+            Current Temperature: $displayTemp$tempUnit (Feels like $displayFeels$tempUnit)
+            Today High/Low: High $displayHigh$tempUnit / Low $displayLow$tempUnit
+            Humidity: ${weather.humidityPct}%
+            Wind Speed: $displayWind $speedUnit
+            Precipitation Today: ${weather.precipitationMm} mm (Current rain chance: ${weather.currentPrecipProb}%)
+            UV Index: ${String.format(Locale.US, "%.1f", weather.currentUvIndex)}
+            Sunrise: ${weather.sunCycle.sunriseFormatted}, Sunset: ${weather.sunCycle.sunsetFormatted}
+            Hourly Forecast (next 12h): $hourlySummary
+            Daily Forecast: $dailySummary
+        """.trimIndent()
+
+        val apiKey = BuildConfig.GEMINI_API_KEY
+        if (!apiKey.isNullOrBlank() && apiKey != "MY_GEMINI_API_KEY") {
+            try {
+                val prompt = "User Question: \"$trimmedQuery\"\n\nWeather Telemetry for ${weather.city.name}:\n$weatherTelemetry"
+                val request = GeminiGenerateRequest(
+                    contents = listOf(
+                        GeminiContent(parts = listOf(GeminiPart(text = prompt)))
+                    ),
+                    systemInstruction = GeminiContent(
+                        parts = listOf(
+                            GeminiPart(
+                                text = "You are an intelligent, friendly AI weather assistant for a modern glassmorphic Android app. Answer the user's natural language question accurately using the provided weather telemetry for ${weather.city.name}. Provide a clear, natural, and concise answer (2 to 3 sentences maximum). Be specific with numbers, hours, or precipitation probabilities when relevant. Do not include markdown asterisks, bold characters, or quote marks in your response."
+                            )
+                        )
+                    )
+                )
+                val response = gemini.generateMeteorologyBriefing(apiKey = apiKey, request = request)
+                val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
+                if (!text.isNullOrBlank()) {
+                    return@withContext text
+                }
+            } catch (e: Exception) {
+                // Fallback to local intelligent natural language answer processor
+            }
+        }
+
+        // Local Rule-Based Natural Language Analyzer
+        return@withContext processLocalWeatherQuestion(
+            query = trimmedQuery,
+            weather = weather,
+            displayTemp = displayTemp,
+            displayFeels = displayFeels,
+            displayHigh = displayHigh,
+            displayLow = displayLow,
+            displayWind = displayWind,
+            tempUnit = tempUnit,
+            speedUnit = speedUnit
+        )
+    }
+
+    private fun processLocalWeatherQuestion(
+        query: String,
+        weather: CompleteWeatherData,
+        displayTemp: Int,
+        displayFeels: Int,
+        displayHigh: Int,
+        displayLow: Int,
+        displayWind: Int,
+        tempUnit: String,
+        speedUnit: String
+    ): String {
+        val q = query.lowercase(Locale.ROOT)
+        val city = weather.city.name
+        val rainChances = weather.hourlyList.take(12).filter { it.precipitationProb >= 30 }
+
+        return when {
+            q.contains("rain") || q.contains("umbrella") || q.contains("shower") || q.contains("precipitation") -> {
+                if (weather.precipitationMm > 0.0 || weather.currentPrecipProb >= 50) {
+                    "Yes, rain is expected in $city today with a ${weather.currentPrecipProb}% chance of precipitation. Be sure to carry an umbrella or rain shell."
+                } else if (rainChances.isNotEmpty()) {
+                    val times = rainChances.take(2).joinToString(" and ") { "${it.hourLabel} (${it.precipitationProb}%)" }
+                    "There is a moderate chance of rain around $times in $city today. It's smart to pack a light umbrella."
+                } else {
+                    "No significant rain is in the forecast for $city today (only a ${weather.currentPrecipProb}% chance). You can leave your umbrella at home."
+                }
+            }
+            q.contains("wear") || q.contains("jacket") || q.contains("clothes") || q.contains("outfit") || q.contains("coat") -> {
+                when {
+                    weather.currentTempC < 8 -> "It is cold in $city at $displayTemp$tempUnit. Bundle up in a heavy winter coat, warm layers, and a scarf."
+                    weather.currentTempC in 8.0..16.0 -> "Temperatures are brisk around $displayTemp$tempUnit in $city. A cozy fleece jacket or layered sweater will keep you warm."
+                    weather.currentTempC in 16.1..23.0 -> "Mild and pleasant conditions at $displayTemp$tempUnit in $city. A light cardigan, windbreaker, or long sleeve shirt is ideal."
+                    else -> "Warm and summery at $displayTemp$tempUnit in $city. Lightweight breathable cotton, shorts, and sunglasses are recommended."
+                }
+            }
+            q.contains("wind") || q.contains("breeze") || q.contains("gust") -> {
+                if (weather.windSpeedKmh > 25) {
+                    "It is fairly windy in $city with winds blowing at $displayWind $speedUnit. Hold on to your hats and secure lightweight outdoor items."
+                } else {
+                    "Wind conditions in $city are gentle at $displayWind $speedUnit with only calm breezes."
+                }
+            }
+            q.contains("run") || q.contains("walk") || q.contains("outdoor") || q.contains("exercise") || q.contains("jog") -> {
+                val bestHour = weather.hourlyList.take(12).minByOrNull { it.precipitationProb }?.hourLabel ?: "late afternoon"
+                "The best time for outdoor activities in $city is around $bestHour when precipitation risk is lowest and conditions are steady."
+            }
+            q.contains("uv") || q.contains("sun") || q.contains("sunscreen") -> {
+                if (weather.currentUvIndex >= 6.0) {
+                    "The UV index in $city is elevated at ${String.format(Locale.US, "%.1f", weather.currentUvIndex)}. Make sure to apply SPF 30+ sunscreen and wear sunglasses if staying outside."
+                } else {
+                    "The UV index in $city is moderate at ${String.format(Locale.US, "%.1f", weather.currentUvIndex)}, requiring standard sun protection during peak daylight hours."
+                }
+            }
+            q.contains("hot") || q.contains("temp") || q.contains("warm") || q.contains("cold") || q.contains("freeze") -> {
+                "In $city, the current temperature is $displayTemp$tempUnit (feels like $displayFeels$tempUnit), with an expected high of $displayHigh$tempUnit and a low of $displayLow$tempUnit."
+            }
+            q.contains("tomorrow") -> {
+                val tomorrow = weather.dailyList.getOrNull(1)
+                if (tomorrow != null) {
+                    val tMax = if (tempUnit == "°F") ((tomorrow.maxTempC * 9 / 5) + 32).toInt() else tomorrow.maxTempC.toInt()
+                    val tMin = if (tempUnit == "°F") ((tomorrow.minTempC * 9 / 5) + 32).toInt() else tomorrow.minTempC.toInt()
+                    "Tomorrow in $city will see a high of $tMax$tempUnit and a low of $tMin$tempUnit with a ${tomorrow.precipitationProb}% chance of rain."
+                } else {
+                    "Tomorrow's forecast in $city shows steady seasonal conditions with mild breezes."
+                }
+            }
+            else -> {
+                "In $city, it is currently $displayTemp$tempUnit and ${weather.condition.title.lowercase(Locale.ROOT)}. Today will reach a high of $displayHigh$tempUnit with a ${weather.currentPrecipProb}% chance of precipitation."
+            }
+        }
     }
 
     private fun generateLocalBriefing(

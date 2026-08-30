@@ -7,7 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 
-private val DarkColorScheme = darkColorScheme(
+private val BaseDarkColorScheme = darkColorScheme(
     primary = AccentCyan,
     onPrimary = Color(0xFF0F172A),
     primaryContainer = Color(0x3300F2FE),
@@ -28,16 +28,36 @@ private val DarkColorScheme = darkColorScheme(
 
 @Composable
 fun SkyGlassWeatherTheme(
+    diurnalPalette: DiurnalPalette? = null,
+    diurnalState: DiurnalThemeState? = null,
     content: @Composable () -> Unit
 ) {
     val adaptiveTypography = rememberAdaptiveTypography()
+    val activePalette = diurnalPalette ?: SolarThemeScheduler.generatePalette(
+        phase = DiurnalSolarPhase.MORNING_AZURE,
+        condition = com.example.data.model.WeatherConditionType.CLEAR_DAY,
+        isDay = true
+    )
+    val activeState = diurnalState ?: DiurnalThemeState(
+        phase = activePalette.phase,
+        palette = activePalette
+    )
+
+    val dynamicColorScheme = BaseDarkColorScheme.copy(
+        primary = activePalette.primaryAccent,
+        secondary = activePalette.secondaryAccent,
+        primaryContainer = activePalette.primaryAccent.copy(alpha = 0.22f),
+        secondaryContainer = activePalette.secondaryAccent.copy(alpha = 0.22f)
+    )
 
     MaterialTheme(
-        colorScheme = DarkColorScheme,
+        colorScheme = dynamicColorScheme,
         typography = Typography,
     ) {
         CompositionLocalProvider(
-            LocalGlassTypography provides adaptiveTypography
+            LocalGlassTypography provides adaptiveTypography,
+            LocalDiurnalPalette provides activePalette,
+            LocalDiurnalThemeState provides activeState
         ) {
             content()
         }

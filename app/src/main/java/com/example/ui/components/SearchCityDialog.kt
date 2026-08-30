@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.LocationCity
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.NearMe
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -67,7 +68,9 @@ fun SearchCityDialog(
     onQueryChanged: (String) -> Unit,
     isSearching: Boolean,
     searchResults: List<GeocodingResult>,
+    isGpsLocating: Boolean = false,
     onCitySelected: (GeocodingResult) -> Unit,
+    onUseCurrentLocation: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val typo = LocalGlassTypography.current
@@ -197,6 +200,74 @@ fun SearchCityDialog(
                         .fillMaxWidth()
                         .testTag("city_search_input")
                 )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // GPS Current Location Quick Action
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(AccentCyan.copy(alpha = 0.18f), AccentAmber.copy(alpha = 0.12f))
+                            )
+                        )
+                        .border(1.dp, AccentCyan.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+                        .clickable {
+                            HapticUtils.performClick(view)
+                            onUseCurrentLocation()
+                            onDismiss()
+                        }
+                        .padding(horizontal = 14.dp, vertical = 12.dp)
+                        .testTag("use_gps_location_button"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(AccentCyan.copy(alpha = 0.25f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isGpsLocating) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = AccentCyan
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Rounded.MyLocation,
+                                    contentDescription = "GPS Location",
+                                    tint = AccentCyan,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Use Current GPS Location",
+                                color = TextPrimary,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Detect coordinates via Play Services",
+                                color = TextMuted,
+                                style = typo.subText.copy(fontSize = 10.5.sp)
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Rounded.NearMe,
+                        contentDescription = null,
+                        tint = AccentCyan,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 

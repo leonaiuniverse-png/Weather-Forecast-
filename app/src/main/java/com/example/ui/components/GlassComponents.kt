@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -43,25 +45,36 @@ import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.rounded.AcUnit
 import androidx.compose.material.icons.rounded.Air
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.CrisisAlert
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.FlashOn
 import androidx.compose.material.icons.rounded.Grain
+import androidx.compose.material.icons.rounded.HealthAndSafety
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.NightsStay
+import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Opacity
+import androidx.compose.material.icons.rounded.ReportProblem
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SsidChart
 import androidx.compose.material.icons.rounded.Thermostat
 import androidx.compose.material.icons.rounded.TrendingDown
 import androidx.compose.material.icons.rounded.TrendingUp
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material.icons.rounded.WbCloudy
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -72,6 +85,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -80,6 +94,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -90,7 +105,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import com.example.data.model.AlertSeverity
 import com.example.data.model.HourlyForecastItem
+import com.example.data.model.LunarPhaseInfo
+import com.example.data.model.SevereWeatherAlert
 import com.example.data.model.SunCycleInfo
 import com.example.data.model.WeatherConditionType
 import com.example.ui.theme.AccentAmber
@@ -99,6 +118,8 @@ import com.example.ui.theme.AccentCyan
 import com.example.ui.theme.AccentCyanGlow
 import com.example.ui.theme.AccentEmerald
 import com.example.ui.theme.AccentRose
+import com.example.ui.theme.DiurnalPalette
+import com.example.ui.theme.DiurnalSolarPhase
 import com.example.ui.theme.GlassBorderEnd
 import com.example.ui.theme.GlassBorderStart
 import com.example.ui.theme.GlassFillEnd
@@ -110,6 +131,8 @@ import com.example.ui.theme.GradientRain
 import com.example.ui.theme.GradientSnow
 import com.example.ui.theme.GradientSunset
 import com.example.ui.theme.GradientThunderstorm
+import com.example.ui.theme.LocalDiurnalPalette
+import com.example.ui.theme.LocalDiurnalThemeState
 import com.example.ui.theme.LocalGlassTypography
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
@@ -120,48 +143,67 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
+ * Ambient Glassmorphism intensity setting: 0f (Crisp Crystal) to 1f (Ultra Frosted).
+ */
+val LocalGlassBlurIntensity = compositionLocalOf { 0.65f }
+
+/**
  * Reusable Glassmorphic Card Container:
- * - Border radius: 24.dp
- * - Linear Gradient fill: rgba(255,255,255,0.16) to rgba(255,255,255,0.03)
- * - Refractive edge border: 1.dp solid rgba(255,255,255,0.22)
- * - Ambient depth shadow
+ * - Border radius: 24.dp (customizable)
+ * - Linear Gradient fill with dynamic opacity and backdrop diffusion based on LocalGlassBlurIntensity
+ * - Refractive edge border
+ * - Ambient depth shadow scaled with blur intensity
  */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 24.dp,
-    borderGradient: Brush = Brush.linearGradient(
-        colors = listOf(GlassBorderStart, GlassBorderEnd)
-    ),
-    fillGradient: Brush = Brush.linearGradient(
-        colors = listOf(GlassFillStart, GlassFillEnd),
-        start = Offset(0f, 0f),
-        end = Offset(1000f, 1000f)
-    ),
+    borderGradient: Brush? = null,
+    fillGradient: Brush? = null,
     tintColor: Color? = null,
     onClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     val shape = RoundedCornerShape(cornerRadius)
+    val blurIntensity = LocalGlassBlurIntensity.current
+
+    // Dynamically adjust specular refraction, frosted fill opacity, and ambient depth
+    val effectiveFill = fillGradient ?: Brush.linearGradient(
+        colors = listOf(
+            GlassFillStart.copy(alpha = (0.04f + 0.20f * blurIntensity).coerceIn(0.04f, 0.45f)),
+            GlassFillEnd.copy(alpha = (0.01f + 0.08f * blurIntensity).coerceIn(0.01f, 0.25f))
+        ),
+        start = Offset(0f, 0f),
+        end = Offset(1000f, 1000f)
+    )
+
+    val effectiveBorder = borderGradient ?: Brush.linearGradient(
+        colors = listOf(
+            GlassBorderStart.copy(alpha = (0.08f + 0.24f * blurIntensity).coerceIn(0.08f, 0.50f)),
+            GlassBorderEnd.copy(alpha = (0.02f + 0.12f * blurIntensity).coerceIn(0.02f, 0.30f))
+        )
+    )
+
+    val elevation = (6 + 14 * blurIntensity).dp
     
     val baseModifier = modifier
         .shadow(
-            elevation = 14.dp,
+            elevation = elevation,
             shape = shape,
-            ambientColor = Color.Black.copy(alpha = 0.35f),
-            spotColor = Color.Black.copy(alpha = 0.45f)
+            ambientColor = Color.Black.copy(alpha = (0.15f + 0.32f * blurIntensity).coerceIn(0.15f, 0.65f)),
+            spotColor = Color.Black.copy(alpha = (0.20f + 0.38f * blurIntensity).coerceIn(0.20f, 0.75f))
         )
         .clip(shape)
-        .background(fillGradient)
+        .background(effectiveFill)
         .then(
             if (tintColor != null) {
-                Modifier.background(tintColor.copy(alpha = 0.07f))
+                Modifier.background(tintColor.copy(alpha = (0.03f + 0.08f * blurIntensity).coerceIn(0.03f, 0.20f)))
             } else {
                 Modifier
             }
         )
         .border(
-            border = BorderStroke(1.dp, borderGradient),
+            border = BorderStroke(1.dp, effectiveBorder),
             shape = shape
         )
         .then(
@@ -179,30 +221,78 @@ fun GlassCard(
 }
 
 /**
- * Dynamic Atmospheric Background that shifts based on weather conditions.
+ * Dynamic Atmospheric Background Canvas that smoothly tweens colors and glow meshes
+ * across Diurnal Solar Phases (Dawn Twilight, Golden Sunrise, Morning Azure, Solar Noon,
+ * Afternoon Warmth, Golden Sunset, Dusk Twilight, Deep Starlight Night) and weather states
+ * (Clear, Rainy, Thunderstorm, Snowy, Foggy, Cloudy).
  */
 @Composable
 fun AtmosphericBackground(
     conditionType: WeatherConditionType,
+    isDay: Boolean = true,
+    diurnalPalette: DiurnalPalette? = null,
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val gradientColors = when (conditionType) {
-        WeatherConditionType.CLEAR_DAY -> GradientClearDay
-        WeatherConditionType.CLEAR_NIGHT -> GradientClearNight
-        WeatherConditionType.RAINY -> GradientRain
-        WeatherConditionType.THUNDERSTORM -> GradientThunderstorm
-        WeatherConditionType.SNOWY -> GradientSnow
-        WeatherConditionType.FOGGY -> GradientFog
-        WeatherConditionType.CLOUDY -> GradientRain
-    }
+    val activePalette = diurnalPalette ?: LocalDiurnalPalette.current
+
+    // 1. Determine multi-stop gradient color palette based on diurnal palette and condition
+    val stops = activePalette.gradientStops
+    val targetColor0 = stops.getOrElse(0) { Color(0xFF0A223E) }
+    val targetColor1 = stops.getOrElse(1) { Color(0xFF103E64) }
+    val targetColor2 = stops.getOrElse(2) { Color(0xFF185B84) }
+    val targetColor3 = stops.getOrElse(3) { Color(0xFF22789E) }
+
+    // 2. Smooth color-tweening animation across all gradient stops with 1300ms easing curve
+    val animColor0 by animateColorAsState(
+        targetValue = targetColor0,
+        animationSpec = tween(durationMillis = 1300, easing = FastOutSlowInEasing),
+        label = "bg_gradient_stop_0"
+    )
+    val animColor1 by animateColorAsState(
+        targetValue = targetColor1,
+        animationSpec = tween(durationMillis = 1300, easing = FastOutSlowInEasing),
+        label = "bg_gradient_stop_1"
+    )
+    val animColor2 by animateColorAsState(
+        targetValue = targetColor2,
+        animationSpec = tween(durationMillis = 1300, easing = FastOutSlowInEasing),
+        label = "bg_gradient_stop_2"
+    )
+    val animColor3 by animateColorAsState(
+        targetValue = targetColor3,
+        animationSpec = tween(durationMillis = 1300, easing = FastOutSlowInEasing),
+        label = "bg_gradient_stop_3"
+    )
+
+    // 3. Smoothly tween atmospheric radial mesh glow tints
+    val targetGlow1 = activePalette.celestialGlow1
+    val animGlow1 by animateColorAsState(
+        targetValue = targetGlow1,
+        animationSpec = tween(durationMillis = 1300, easing = FastOutSlowInEasing),
+        label = "bg_radial_glow_1"
+    )
+
+    val targetGlow2 = activePalette.celestialGlow2
+    val animGlow2 by animateColorAsState(
+        targetValue = targetGlow2,
+        animationSpec = tween(durationMillis = 1300, easing = FastOutSlowInEasing),
+        label = "bg_radial_glow_2"
+    )
+
+    val targetGlowHorizon = activePalette.horizonGlow
+    val animGlowHorizon by animateColorAsState(
+        targetValue = targetGlowHorizon,
+        animationSpec = tween(durationMillis = 1300, easing = FastOutSlowInEasing),
+        label = "bg_radial_glow_horizon"
+    )
 
     val infiniteTransition = rememberInfiniteTransition(label = "AtmosphereDrift")
     val driftOffset by infiniteTransition.animateFloat(
-        initialValue = -50f,
-        targetValue = 50f,
+        initialValue = -45f,
+        targetValue = 45f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 8000, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 9000, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "AtmosphereDrift"
@@ -212,51 +302,60 @@ fun AtmosphericBackground(
         modifier = modifier
             .fillMaxSize()
             .drawBehind {
-                // Multi-stop base linear gradient
+                // 4-stop diagonal base linear gradient with fluid color tweening
                 drawRect(
                     brush = Brush.linearGradient(
-                        colors = gradientColors,
+                        colors = listOf(animColor0, animColor1, animColor2, animColor3),
                         start = Offset(0f, 0f),
                         end = Offset(size.width, size.height)
                     )
                 )
 
-                // Atmospheric radial mesh glow 1 (Top right)
+                // Atmospheric radial mesh glow 1 (Top-right celestial source)
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            when (conditionType) {
-                                WeatherConditionType.CLEAR_DAY -> AccentAmber.copy(alpha = 0.22f)
-                                WeatherConditionType.THUNDERSTORM -> AccentCyan.copy(alpha = 0.25f)
-                                WeatherConditionType.RAINY -> AccentCyan.copy(alpha = 0.16f)
-                                else -> AccentCyan.copy(alpha = 0.14f)
-                            },
+                            animGlow1,
                             Color.Transparent
                         ),
-                        center = Offset(size.width * 0.85f + driftOffset, size.height * 0.15f),
-                        radius = size.width * 0.65f
+                        center = Offset(size.width * 0.82f + driftOffset, size.height * 0.12f),
+                        radius = size.width * 0.72f
                     )
                 )
 
-                // Atmospheric radial mesh glow 2 (Bottom left)
+                // Atmospheric radial mesh glow 2 (Bottom-left tropospheric refraction)
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            when (conditionType) {
-                                WeatherConditionType.THUNDERSTORM -> Color(0xFF9333EA).copy(alpha = 0.25f)
-                                WeatherConditionType.CLEAR_DAY -> AccentCyan.copy(alpha = 0.18f)
-                                else -> Color(0xFF1E3A8A).copy(alpha = 0.22f)
-                            },
+                            animGlow2,
                             Color.Transparent
                         ),
-                        center = Offset(size.width * 0.15f - driftOffset, size.height * 0.75f),
-                        radius = size.width * 0.75f
+                        center = Offset(size.width * 0.16f - driftOffset, size.height * 0.78f),
+                        radius = size.width * 0.80f
+                    )
+                )
+
+                // Ambient horizon diffusion mesh glow (Mid-screen volume)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            animGlowHorizon,
+                            Color.Transparent
+                        ),
+                        center = Offset(size.width * 0.5f, size.height * 0.45f + driftOffset * 0.5f),
+                        radius = size.width * 0.88f
                     )
                 )
             }
     ) {
-        // Overlay particle animation
-        WeatherParticleOverlay(conditionType = conditionType)
+        // Smooth crossfading overlay particle animation when weather conditions change
+        Crossfade(
+            targetState = conditionType,
+            animationSpec = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+            label = "weather_particle_crossfade"
+        ) { targetCondition ->
+            WeatherParticleOverlay(conditionType = targetCondition)
+        }
         
         // App Content
         content()
@@ -712,9 +811,10 @@ fun WeatherParticleOverlay(
 }
 
 /**
- * Sun Cycle Glass Card:
+ * Sun Cycle & Lunar Phase Glass Card:
  * Displays real-time celestial solar trajectory, sunrise/sunset times, daylight length,
- * and time until the next solar transition.
+ * and a visual indicator of the current lunar phase using a custom canvas shape to show the moon's
+ * current illumination percentage and celestial progression.
  */
 @Composable
 fun SunCycleCard(
@@ -722,6 +822,9 @@ fun SunCycleCard(
     modifier: Modifier = Modifier
 ) {
     val typo = LocalGlassTypography.current
+    val lunarPhase = sunCycle.lunarPhase ?: remember {
+        com.example.data.repository.WeatherRepository().calculateLunarPhase()
+    }
 
     GlassCard(
         modifier = modifier
@@ -731,6 +834,7 @@ fun SunCycleCard(
         borderGradient = Brush.linearGradient(
             colors = listOf(
                 AccentAmber.copy(alpha = 0.35f),
+                Color(0xFF818CF8).copy(alpha = 0.30f),
                 GlassBorderEnd
             )
         )
@@ -810,7 +914,7 @@ fun SunCycleCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Footer Metrics Row: Sunrise, Daylight Duration, Sunset
+            // Solar Metrics Row: Sunrise, Daylight Duration, Sunset
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -898,6 +1002,508 @@ fun SunCycleCard(
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // ----------------------------------------------------
+            // ACTIVE SOLAR DIURNAL THEME STATUS & PREVIEW
+            // ----------------------------------------------------
+            val diurnalState = LocalDiurnalThemeState.current
+            val currentPalette = LocalDiurnalPalette.current
+            val phase = diurnalState.phase
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(currentPalette.primaryAccent.copy(alpha = 0.10f))
+                    .border(1.dp, currentPalette.primaryAccent.copy(alpha = 0.30f), RoundedCornerShape(16.dp))
+                    .padding(12.dp)
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .background(currentPalette.primaryAccent.copy(alpha = 0.22f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = phase.icon,
+                                    contentDescription = phase.title,
+                                    tint = currentPalette.primaryAccent,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = phase.title,
+                                        color = currentPalette.primaryAccent,
+                                        style = typo.badgeText.copy(fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    if (diurnalState.isAutoScheduleEnabled) {
+                                        Box(
+                                            modifier = Modifier
+                                                .background(currentPalette.primaryAccent.copy(alpha = 0.20f), RoundedCornerShape(6.dp))
+                                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "AUTO",
+                                                color = currentPalette.primaryAccent,
+                                                style = typo.badgeText.copy(fontSize = 8.5.sp, fontWeight = FontWeight.Black)
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = phase.moodDescription,
+                                    color = TextSecondary,
+                                    style = typo.subText.copy(fontSize = 10.5.sp)
+                                )
+                            }
+                        }
+
+                        // Gradient Swatch Preview Pill
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color.Black.copy(alpha = 0.35f))
+                                .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            currentPalette.gradientStops.forEach { swatchColor ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(swatchColor, CircleShape)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Next Solar Milestone:",
+                            color = TextMuted,
+                            style = typo.subText.copy(fontSize = 10.5.sp)
+                        )
+                        Text(
+                            text = diurnalState.nextTransitionSummary,
+                            color = currentPalette.secondaryAccent,
+                            style = typo.badgeText.copy(fontWeight = FontWeight.SemiBold, fontSize = 10.5.sp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Celestial Glass Horizontal Divider
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.White.copy(alpha = 0.18f),
+                                Color(0xFF818CF8).copy(alpha = 0.35f),
+                                Color.White.copy(alpha = 0.18f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ----------------------------------------------------
+            // LUNAR PHASE & ILLUMINATION SECTION
+            // ----------------------------------------------------
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(Color(0xFF818CF8).copy(alpha = 0.20f), CircleShape)
+                        .border(1.dp, Color(0xFFC7D2FE).copy(alpha = 0.35f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.NightsStay,
+                        contentDescription = "Lunar Phase",
+                        tint = Color(0xFFC7D2FE),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Text(
+                    text = "LUNAR PHASE",
+                    style = typo.sectionHeader,
+                    color = Color(0xFFC7D2FE)
+                )
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Lunar Illumination Badge
+                Box(
+                    modifier = Modifier
+                        .background(
+                            brush = Brush.horizontalGradient(
+                                colors = listOf(
+                                    Color(0xFF818CF8).copy(alpha = 0.22f),
+                                    Color(0xFF4F46E5).copy(alpha = 0.10f)
+                                )
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .border(
+                            1.dp,
+                            Color(0xFFC7D2FE).copy(alpha = 0.35f),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "${lunarPhase.illuminationPct}% Illumination",
+                        style = typo.badgeText,
+                        color = Color(0xFFC7D2FE)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Lunar Content Row: Custom Canvas Moon + Phase Details + Illumination Metric Card
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White.copy(alpha = 0.04f))
+                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 1. Custom Canvas Moon Phase Visual Indicator with Illumination Ring
+                MoonPhaseCanvas(
+                    lunarPhase = lunarPhase,
+                    sizeDp = 58.dp,
+                    modifier = Modifier.testTag("moon_phase_canvas")
+                )
+
+                Spacer(modifier = Modifier.width(14.dp))
+
+                // 2. Middle Column: Phase Name, Moon Age, and Next Phase Milestone
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = lunarPhase.phaseName,
+                        style = typo.sectionHeader.copy(
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (15.5f * min(typo.fontScale, 1.25f)).sp
+                        )
+                    )
+
+                    Text(
+                        text = "Moon Age: ${lunarPhase.moonAgeDays}d • ${if (lunarPhase.isWaxing) "Waxing" else "Waning"}",
+                        style = typo.subText.copy(color = TextSecondary)
+                    )
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    // Next Milestone Pill
+                    Row(
+                        modifier = Modifier
+                            .background(Color(0xFF818CF8).copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                            .border(0.8.dp, Color(0xFFC7D2FE).copy(alpha = 0.28f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 7.dp, vertical = 2.5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AutoAwesome,
+                            contentDescription = null,
+                            tint = AccentCyan,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = lunarPhase.nextPhaseSummary,
+                            color = AccentCyan,
+                            style = typo.badgeText.copy(
+                                fontSize = (10f * min(typo.fontScale, 1.25f)).sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // 3. Right Column: Metric Glass Pod showing exact Illumination Percentage
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            brush = Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFF818CF8).copy(alpha = 0.16f),
+                                    Color(0xFF1E1B4B).copy(alpha = 0.25f)
+                                )
+                            )
+                        )
+                        .border(1.dp, Color(0xFFC7D2FE).copy(alpha = 0.22f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "${lunarPhase.illuminationPct}%",
+                            style = typo.metricValue.copy(
+                                fontSize = (19 * min(typo.fontScale, 1.25f)).sp,
+                                color = Color(0xFFE0E7FF)
+                            )
+                        )
+                        Text(
+                            text = "ILLUMINATED",
+                            style = typo.metricLabel.copy(
+                                fontSize = (8.5f * min(typo.fontScale, 1.25f)).sp,
+                                color = Color(0xFFA5B4FC)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Custom Canvas rendering a realistic lunar sphere and the exact phase terminator
+ * showing the moon's current illumination percentage.
+ */
+@Composable
+fun MoonPhaseCanvas(
+    lunarPhase: LunarPhaseInfo,
+    modifier: Modifier = Modifier,
+    sizeDp: Dp = 56.dp
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "MoonGlowPulse")
+    val glowPulse by infiniteTransition.animateFloat(
+        initialValue = 0.65f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "MoonGlowPulse"
+    )
+
+    Canvas(modifier = modifier.size(sizeDp)) {
+        val width = size.width
+        val height = size.height
+        val cx = width / 2f
+        val cy = height / 2f
+        val radius = (min(width, height) / 2f) - 4.dp.toPx()
+
+        // 1. Ambient Lunar Atmosphere Glow
+        val glowRadius = radius + 5.dp.toPx()
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color(0xFFC7D2FE).copy(alpha = 0.28f * glowPulse),
+                    Color(0xFF818CF8).copy(alpha = 0.10f * glowPulse),
+                    Color.Transparent
+                ),
+                center = Offset(cx, cy),
+                radius = glowRadius
+            ),
+            radius = glowRadius,
+            center = Offset(cx, cy)
+        )
+
+        // 2. Dark Unilluminated Lunar Disc (Deep slate/navy celestial sphere)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color(0xFF1E293B),
+                    Color(0xFF0F172A),
+                    Color(0xFF020617)
+                ),
+                center = Offset(cx - radius * 0.2f, cy - radius * 0.2f),
+                radius = radius
+            ),
+            radius = radius,
+            center = Offset(cx, cy)
+        )
+
+        // Subtle dark lunar maria (crater details in unlit dark side)
+        drawCircle(
+            color = Color(0xFF0F172A).copy(alpha = 0.6f),
+            radius = radius * 0.25f,
+            center = Offset(cx - radius * 0.3f, cy - radius * 0.25f)
+        )
+        drawCircle(
+            color = Color(0xFF0F172A).copy(alpha = 0.5f),
+            radius = radius * 0.18f,
+            center = Offset(cx + radius * 0.2f, cy + radius * 0.3f)
+        )
+        drawCircle(
+            color = Color(0xFF0F172A).copy(alpha = 0.4f),
+            radius = radius * 0.14f,
+            center = Offset(cx - radius * 0.15f, cy + radius * 0.35f)
+        )
+
+        // 3. Illuminated Phase Custom Canvas Shape
+        val phaseProgress = lunarPhase.phaseProgress.coerceIn(0f, 1f)
+        val isWaxing = lunarPhase.isWaxing
+
+        // Terminator semi-minor axis rx:
+        // When phaseProgress = 0 (New): rx = R (all dark)
+        // When phaseProgress = 0.25 (Quarter): rx = 0 (half lit)
+        // When phaseProgress = 0.5 (Full): rx = -R (all lit)
+        val cosVal = cos(2.0 * Math.PI * phaseProgress).toFloat()
+        val rx = radius * cosVal
+
+        val illuminatedPath = Path().apply {
+            if (isWaxing) {
+                // Waxing: Lit on the right side
+                moveTo(cx, cy - radius)
+                // Outer right semicircle arc to bottom
+                arcTo(
+                    rect = Rect(
+                        cx - radius,
+                        cy - radius,
+                        cx + radius,
+                        cy + radius
+                    ),
+                    startAngleDegrees = -90f,
+                    sweepAngleDegrees = 180f,
+                    forceMoveTo = false
+                )
+                // Terminator curve back from bottom to top passing through (cx + rx, cy)
+                cubicTo(
+                    cx + rx, cy + radius * 0.55228f,
+                    cx + rx, cy - radius * 0.55228f,
+                    cx, cy - radius
+                )
+                close()
+            } else {
+                // Waning: Lit on the left side
+                moveTo(cx, cy - radius)
+                // Outer left semicircle arc to bottom
+                arcTo(
+                    rect = Rect(
+                        cx - radius,
+                        cy - radius,
+                        cx + radius,
+                        cy + radius
+                    ),
+                    startAngleDegrees = -90f,
+                    sweepAngleDegrees = -180f,
+                    forceMoveTo = false
+                )
+                // Terminator curve back from bottom to top passing through (cx - rx, cy)
+                cubicTo(
+                    cx - rx, cy + radius * 0.55228f,
+                    cx - rx, cy - radius * 0.55228f,
+                    cx, cy - radius
+                )
+                close()
+            }
+        }
+
+        // Draw illuminated shape with radiant pearl-silver moonlight gradient
+        if (lunarPhase.illuminationPct > 0) {
+            drawPath(
+                path = illuminatedPath,
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color(0xFFFFFFFF),
+                        Color(0xFFF1F5F9),
+                        Color(0xFFE2E8F0),
+                        Color(0xFFCBD5E1)
+                    ),
+                    center = if (isWaxing) Offset(cx + radius * 0.4f, cy - radius * 0.3f) else Offset(cx - radius * 0.4f, cy - radius * 0.3f),
+                    radius = radius * 1.3f
+                )
+            )
+
+            // Subtle lunar surface texture / maria on illuminated side
+            clipPath(illuminatedPath) {
+                drawCircle(
+                    color = Color(0xFF94A3B8).copy(alpha = 0.25f),
+                    radius = radius * 0.28f,
+                    center = Offset(cx + (if (isWaxing) 0.3f else -0.3f) * radius, cy - 0.2f * radius)
+                )
+                drawCircle(
+                    color = Color(0xFF94A3B8).copy(alpha = 0.20f),
+                    radius = radius * 0.20f,
+                    center = Offset(cx + (if (isWaxing) 0.15f else -0.15f) * radius, cy + 0.3f * radius)
+                )
+                drawCircle(
+                    color = Color(0xFF94A3B8).copy(alpha = 0.16f),
+                    radius = radius * 0.14f,
+                    center = Offset(cx + (if (isWaxing) 0.4f else -0.4f) * radius, cy + 0.1f * radius)
+                )
+            }
+        }
+
+        // 4. Subtle Outer Disc Edge Ring
+        drawCircle(
+            color = Color.White.copy(alpha = 0.22f),
+            radius = radius,
+            center = Offset(cx, cy),
+            style = Stroke(width = 1.dp.toPx())
+        )
+
+        // 5. Illumination Arc Progress Ring around the perimeter
+        val illumFraction = (lunarPhase.illuminationPct / 100f).coerceIn(0f, 1f)
+        if (illumFraction > 0.01f) {
+            val ringRadius = radius + 2.5.dp.toPx()
+            drawArc(
+                brush = Brush.sweepGradient(
+                    colors = listOf(
+                        AccentCyan,
+                        Color(0xFFC7D2FE),
+                        AccentAmber,
+                        AccentCyan
+                    ),
+                    center = Offset(cx, cy)
+                ),
+                startAngle = -90f,
+                sweepAngle = 360f * illumFraction,
+                useCenter = false,
+                topLeft = Offset(cx - ringRadius, cy - ringRadius),
+                size = Size(ringRadius * 2, ringRadius * 2),
+                style = Stroke(
+                    width = 2.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            )
         }
     }
 }
@@ -1601,5 +2207,593 @@ fun GlassShareFloatingButton(
         }
     }
 }
+
+/**
+ * Critical High-Priority Severe Weather Alert Banner.
+ * Positioned prominently at the top of the dashboard.
+ */
+@Composable
+fun SevereWeatherAlertBanner(
+    alert: SevereWeatherAlert,
+    onViewDetails: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val typo = LocalGlassTypography.current
+
+    // Pulsing animation for emergency glow
+    val pulseTransition = rememberInfiniteTransition(label = "AlertPulse")
+    val glowAlpha by pulseTransition.animateFloat(
+        initialValue = 0.65f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1100, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "AlertGlowAlpha"
+    )
+    val beaconScale by pulseTransition.animateFloat(
+        initialValue = 0.95f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(850, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "BeaconScale"
+    )
+
+    val isCritical = alert.isCritical || alert.severity == AlertSeverity.CRITICAL
+    val primaryAlertColor = if (isCritical) Color(0xFFEF4444) else Color(0xFFF59E0B)
+    val secondaryAlertColor = if (isCritical) Color(0xFF991B1B) else Color(0xFFD97706)
+    val alertBgGlow = if (isCritical) Color(0x38EF4444) else Color(0x38F59E0B)
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("severe_weather_alert_banner")
+            .shadow(
+                elevation = 14.dp,
+                shape = RoundedCornerShape(20.dp),
+                ambientColor = primaryAlertColor.copy(alpha = 0.35f * glowAlpha),
+                spotColor = primaryAlertColor.copy(alpha = 0.55f * glowAlpha)
+            )
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xF01E1318),
+                        Color(0xE6140A0F),
+                        Color(0xF50F070B)
+                    )
+                )
+            )
+            .border(
+                width = 1.6.dp,
+                brush = Brush.linearGradient(
+                    listOf(
+                        primaryAlertColor.copy(alpha = 0.95f * glowAlpha),
+                        secondaryAlertColor.copy(alpha = 0.60f * glowAlpha),
+                        primaryAlertColor.copy(alpha = 0.40f)
+                    )
+                ),
+                shape = RoundedCornerShape(20.dp)
+            )
+    ) {
+        // Decorative background emergency glow flare
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(20.dp))
+        ) {
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        alertBgGlow.copy(alpha = 0.45f * glowAlpha),
+                        Color.Transparent
+                    ),
+                    center = Offset(size.width * 0.15f, size.height * 0.3f),
+                    radius = size.width * 0.65f
+                )
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp)
+        ) {
+            // Top Row: Emergency Beacon, Tag, and Dismiss Action
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Pulsing Emergency Beacon Icon
+                    Box(
+                        modifier = Modifier
+                            .scale(beaconScale)
+                            .size(32.dp)
+                            .background(
+                                Brush.radialGradient(
+                                    listOf(
+                                        primaryAlertColor,
+                                        secondaryAlertColor
+                                    )
+                                ),
+                                shape = CircleShape
+                            )
+                            .shadow(6.dp, CircleShape, spotColor = primaryAlertColor),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isCritical) Icons.Rounded.CrisisAlert else Icons.Rounded.Warning,
+                            contentDescription = "Severe Weather Alert Active",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Pulsing live indicator dot
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .background(primaryAlertColor, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = if (isCritical) "CRITICAL WEATHER ALERT" else "WEATHER ADVISORY",
+                                color = primaryAlertColor,
+                                style = typo.badgeText.copy(
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.sp,
+                                    letterSpacing = 1.1.sp
+                                )
+                            )
+                        }
+
+                        if (!alert.urgency.isNullOrBlank()) {
+                            Text(
+                                text = "Urgency: ${alert.urgency.uppercase()}",
+                                color = Color(0xFFFCA5A5),
+                                style = typo.subText.copy(
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // Dismiss Button (48dp touch target)
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("alert_dismiss_btn")
+                        .clickable(onClick = onDismiss),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .background(Color(0x33FFFFFF), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Dismiss Severe Weather Alert Banner",
+                            tint = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Main Alert Headline
+            Text(
+                text = alert.event,
+                color = Color.White,
+                style = typo.sectionHeader.copy(
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp,
+                    lineHeight = 21.sp
+                )
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Alert Summary description
+            Text(
+                text = alert.headline,
+                color = Color.White.copy(alpha = 0.90f),
+                style = typo.bodyBriefing.copy(
+                    fontSize = 12.5.sp,
+                    lineHeight = 17.sp
+                ),
+                maxLines = 2
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Action Row: "View Safety Guidelines / Details" Button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                if (!alert.areaDesc.isNullOrBlank()) {
+                    Text(
+                        text = "📍 ${alert.areaDesc}",
+                        color = Color.White.copy(alpha = 0.65f),
+                        style = typo.subText.copy(fontSize = 10.5.sp),
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+
+                // Primary View Details Button
+                Box(
+                    modifier = Modifier
+                        .testTag("alert_view_details_btn")
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(primaryAlertColor, secondaryAlertColor)
+                            )
+                        )
+                        .clickable(onClick = onViewDetails)
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Shield,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Safety Action",
+                            color = Color.White,
+                            style = typo.badgeText.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.5.sp
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Compact Pill indicator shown when an alert has been dismissed
+ * so the user can easily reopen the safety guidelines.
+ */
+@Composable
+fun DismissedAlertMiniIndicator(
+    alert: SevereWeatherAlert,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val typo = LocalGlassTypography.current
+    val isCritical = alert.isCritical || alert.severity == AlertSeverity.CRITICAL
+    val accentColor = if (isCritical) Color(0xFFEF4444) else Color(0xFFF59E0B)
+
+    Box(
+        modifier = modifier
+            .testTag("dismissed_alert_mini_chip")
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xD91E1318))
+            .border(
+                width = 1.dp,
+                brush = Brush.horizontalGradient(
+                    listOf(accentColor.copy(alpha = 0.8f), accentColor.copy(alpha = 0.3f))
+                ),
+                shape = RoundedCornerShape(20.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.WarningAmber,
+                contentDescription = "Reopen Alert Details",
+                tint = accentColor,
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "⚠️ Active: ${alert.event} (Tap for details)",
+                color = Color.White.copy(alpha = 0.95f),
+                style = typo.subText.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.5.sp
+                )
+            )
+        }
+    }
+}
+
+/**
+ * Glassmorphic Modal Dialog providing in-depth safety directives,
+ * severity metrics, and regional impact for active severe weather alerts.
+ */
+@Composable
+fun SevereWeatherAlertDetailsDialog(
+    alert: SevereWeatherAlert,
+    onDismiss: () -> Unit
+) {
+    val typo = LocalGlassTypography.current
+    val isCritical = alert.isCritical || alert.severity == AlertSeverity.CRITICAL
+    val primaryAlertColor = if (isCritical) Color(0xFFEF4444) else Color(0xFFF59E0B)
+    val secondaryAlertColor = if (isCritical) Color(0xFF991B1B) else Color(0xFFD97706)
+
+    Dialog(onDismissRequest = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("alert_details_dialog")
+                .shadow(24.dp, RoundedCornerShape(28.dp), spotColor = primaryAlertColor)
+                .clip(RoundedCornerShape(28.dp))
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color(0xF8180E14),
+                            Color(0xF0130910),
+                            Color(0xFA0B0509)
+                        )
+                    )
+                )
+                .border(
+                    width = 1.5.dp,
+                    brush = Brush.linearGradient(
+                        listOf(
+                            primaryAlertColor.copy(alpha = 0.9f),
+                            secondaryAlertColor.copy(alpha = 0.4f),
+                            GlassBorderEnd
+                        )
+                    ),
+                    shape = RoundedCornerShape(28.dp)
+                )
+                .padding(22.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.Start
+            ) {
+                // Header with Shield Icon & Close button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(
+                                    Brush.radialGradient(
+                                        listOf(primaryAlertColor, secondaryAlertColor)
+                                    ),
+                                    CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.HealthAndSafety,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "OFFICIAL WEATHER ADVISORY",
+                                color = primaryAlertColor,
+                                style = typo.badgeText.copy(
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.sp,
+                                    letterSpacing = 1.sp
+                                )
+                            )
+                            Text(
+                                text = alert.senderName,
+                                color = Color.White.copy(alpha = 0.6f),
+                                style = typo.subText.copy(fontSize = 10.sp)
+                            )
+                        }
+                    }
+
+                    // Close Button
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("alert_dialog_close_btn")
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .background(Color(0x2BFFFFFF), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Close Alert Details Dialog",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Event Title
+                Text(
+                    text = alert.event,
+                    color = Color.White,
+                    style = typo.sectionHeader.copy(
+                        fontWeight = FontWeight.Black,
+                        fontSize = 19.sp,
+                        lineHeight = 24.sp
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Severity and Urgency Chips
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(primaryAlertColor.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                            .border(1.dp, primaryAlertColor.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "SEVERITY: ${alert.severity.name}",
+                            color = primaryAlertColor,
+                            style = typo.badgeText.copy(fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0x26FFFFFF), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "URGENCY: ${alert.urgency.uppercase()}",
+                            color = Color.White.copy(alpha = 0.9f),
+                            style = typo.badgeText.copy(fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Detailed Narrative Card
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0x33000000), RoundedCornerShape(14.dp))
+                        .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(14.dp))
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = alert.headline,
+                            color = Color.White,
+                            style = typo.bodyBriefing.copy(fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = alert.description,
+                            color = Color.White.copy(alpha = 0.85f),
+                            style = typo.bodyBriefing.copy(fontSize = 12.sp, lineHeight = 17.sp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Safety & Action Directives Section
+                Text(
+                    text = "Recommended Safety Actions:",
+                    color = primaryAlertColor,
+                    style = typo.badgeText.copy(fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                val safetyInstruction = alert.instruction ?: "Remain indoors and monitor local emergency broadcast channels."
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(primaryAlertColor.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                        .border(1.dp, primaryAlertColor.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(
+                            imageVector = Icons.Rounded.Shield,
+                            contentDescription = null,
+                            tint = primaryAlertColor,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .padding(top = 2.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = safetyInstruction,
+                            color = Color.White.copy(alpha = 0.95f),
+                            style = typo.bodyBriefing.copy(fontSize = 12.sp, lineHeight = 17.sp)
+                        )
+                    }
+                }
+
+                if (!alert.areaDesc.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Impacted Area: ${alert.areaDesc}",
+                        color = Color.White.copy(alpha = 0.6f),
+                        style = typo.subText.copy(fontSize = 11.sp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // Acknowledge Button (48dp height touch target)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(primaryAlertColor, secondaryAlertColor)
+                            )
+                        )
+                        .clickable(onClick = onDismiss),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "I Understand • Acknowledge",
+                        color = Color.White,
+                        style = typo.badgeText.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
 
 

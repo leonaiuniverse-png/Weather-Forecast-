@@ -1,5 +1,8 @@
 package com.example.ui
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -33,18 +36,26 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Compress
 import androidx.compose.material.icons.rounded.Grain
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Opacity
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Thermostat
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -62,18 +73,25 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.location.LocationHelper
 import com.example.data.model.DailyForecastItem
 import com.example.data.model.HourlyForecastItem
 import com.example.data.model.WeatherConditionType
 import com.example.data.repository.CompleteWeatherData
 import com.example.ui.components.AtmosphericBackground
+import com.example.ui.components.DismissedAlertMiniIndicator
 import com.example.ui.components.FeelsLikeTrendCard
 import com.example.ui.components.GlassCard
+import com.example.ui.components.GlassSettingsDialog
 import com.example.ui.components.GlassShareFloatingButton
+import com.example.ui.components.GlassVoiceAssistantDialog
+import com.example.ui.components.LocalGlassBlurIntensity
 import com.example.ui.components.MinMaxThermometerBar
 import com.example.ui.components.MoistureWaveIndicator
 import com.example.ui.components.PulsingSparkle
 import com.example.ui.components.SearchCityDialog
+import com.example.ui.components.SevereWeatherAlertBanner
+import com.example.ui.components.SevereWeatherAlertDetailsDialog
 import com.example.ui.components.SunCycleCard
 import com.example.ui.components.UvGaugeBar
 import com.example.ui.components.WeatherCondition3DIcon
@@ -86,6 +104,7 @@ import com.example.ui.theme.AccentRose
 import com.example.ui.theme.GlassBorderEnd
 import com.example.ui.theme.GlassBorderStart
 import com.example.ui.theme.LocalGlassTypography
+import com.example.ui.theme.SkyGlassWeatherTheme
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -97,6 +116,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.min
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WeatherScreen(
     viewModel: WeatherViewModel = viewModel()
@@ -107,9 +127,42 @@ fun WeatherScreen(
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
+    // Permission launcher for Location APIs
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (granted) {
+            viewModel.detectAndLoadGpsWeather(context)
+        }
+    }
+
+    // Auto-detect user's GPS coordinates on startup & schedule background severe weather alert worker
+    LaunchedEffect(Unit) {
+        // Initialize background worker for severe weather alerts monitoring
+        viewModel.initializeBackgroundWorker(context)
+
+        val locationHelper = LocationHelper(context)
+        if (locationHelper.hasLocationPermission()) {
+            viewModel.detectAndLoadGpsWeather(context, locationHelper)
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
     val currentConditionType = when (val s = state.uiState) {
         is WeatherUiState.Success -> s.data.condition.type
         else -> WeatherConditionType.CLEAR_DAY
+    }
+    val isDay = when (val s = state.uiState) {
+        is WeatherUiState.Success -> s.data.condition.isDay
+        else -> true
     }
 
     // Subtle tactile haptic trigger on dashboard data load & update
@@ -119,44 +172,129 @@ fun WeatherScreen(
         }
     }
 
-    AtmosphericBackground(
-        conditionType = currentConditionType,
-        modifier = Modifier.fillMaxSize()
+    val diurnalThemeState = viewModel.getDiurnalThemeState()
+    val pullToRefreshState = rememberPullToRefreshState()
+
+    SkyGlassWeatherTheme(
+        diurnalPalette = diurnalThemeState.palette,
+        diurnalState = diurnalThemeState
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = statusBarPadding, bottom = navBarPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp)
-                .widthIn(max = 600.dp)
-                .align(Alignment.TopCenter)
+        CompositionLocalProvider(
+            LocalGlassBlurIntensity provides state.blurIntensity
         ) {
-            Spacer(modifier = Modifier.height(8.dp))
+            AtmosphericBackground(
+                conditionType = currentConditionType,
+                isDay = isDay,
+                diurnalPalette = diurnalThemeState.palette,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                    PullToRefreshBox(
+                        isRefreshing = state.isRefreshing,
+                        onRefresh = {
+                            HapticUtils.performRefresh(view)
+                            viewModel.refresh(context)
+                            viewModel.triggerBackgroundSync(context)
+                        },
+                        state = pullToRefreshState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(top = statusBarPadding, bottom = navBarPadding),
+                        indicator = {
+                            PullToRefreshDefaults.Indicator(
+                                state = pullToRefreshState,
+                                isRefreshing = state.isRefreshing,
+                                modifier = Modifier.align(Alignment.TopCenter),
+                                containerColor = Color(0xD00B132B),
+                                color = AccentCyan
+                            )
+                        }
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 18.dp)
+                                .widthIn(max = 600.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                Spacer(modifier = Modifier.height(8.dp))
 
-            // 1. Header Bar
-            HeaderBar(
-                cityName = state.selectedCity.name,
-                countryCode = state.selectedCity.countryCode ?: state.selectedCity.country,
-                isFahrenheit = state.isFahrenheit,
-                isRefreshing = state.isRefreshing,
-                onSearchClick = {
-                    HapticUtils.performClick(view)
-                    viewModel.openSearch()
-                },
-                onRefreshClick = {
-                    HapticUtils.performTick(view)
-                    viewModel.refresh()
-                },
-                onToggleUnit = {
-                    HapticUtils.performTick(view)
-                    viewModel.toggleUnit()
+                // 1. Header Bar with GPS status & action
+                HeaderBar(
+                    cityName = state.selectedCity.name,
+                    countryCode = state.selectedCity.countryCode ?: state.selectedCity.country,
+                    isFahrenheit = state.isFahrenheit,
+                    isRefreshing = state.isRefreshing,
+                    isGpsDetected = state.isGpsDetected,
+                    isGpsLocating = state.isGpsLocating,
+                    onSearchClick = {
+                        HapticUtils.performClick(view)
+                        viewModel.openSearch()
+                    },
+                    onLocateClick = {
+                        HapticUtils.performClick(view)
+                        val locationHelper = LocationHelper(context)
+                        if (locationHelper.hasLocationPermission()) {
+                            viewModel.detectAndLoadGpsWeather(context, locationHelper)
+                        } else {
+                            locationPermissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                )
+                            )
+                        }
+                    },
+                    onRefreshClick = {
+                        HapticUtils.performTick(view)
+                        viewModel.refresh(context)
+                        viewModel.triggerBackgroundSync(context)
+                    },
+                    onToggleUnit = {
+                        HapticUtils.performTick(view)
+                        viewModel.toggleUnit()
+                    },
+                    onSettingsClick = {
+                        HapticUtils.performClick(view)
+                        viewModel.openSettings()
+                    },
+                    onVoiceClick = {
+                        HapticUtils.performClick(view)
+                        viewModel.openVoiceAssistant()
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Critical High-Priority Severe Weather Alert Banner (when active)
+                if (state.activeAlert != null) {
+                    if (!state.isAlertDismissed) {
+                        SevereWeatherAlertBanner(
+                            alert = state.activeAlert!!,
+                            onViewDetails = {
+                                HapticUtils.performClick(view)
+                                viewModel.openAlertDetails(state.activeAlert)
+                            },
+                            onDismiss = {
+                                HapticUtils.performTick(view)
+                                viewModel.dismissAlert()
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                    } else {
+                        DismissedAlertMiniIndicator(
+                            alert = state.activeAlert!!,
+                            onClick = {
+                                HapticUtils.performClick(view)
+                                viewModel.restoreAlert()
+                                viewModel.openAlertDetails(state.activeAlert)
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                    }
                 }
-            )
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            when (val uiState = state.uiState) {
+                when (val uiState = state.uiState) {
                 is WeatherUiState.Loading -> {
                     Box(
                         modifier = Modifier
@@ -264,7 +402,11 @@ fun WeatherScreen(
                         briefing = weather.aiBriefing,
                         onRefreshBriefing = {
                             HapticUtils.performTick(view)
-                            viewModel.refresh()
+                            viewModel.refresh(context)
+                        },
+                        onAskVoiceAssistant = {
+                            HapticUtils.performClick(view)
+                            viewModel.openVoiceAssistant()
                         }
                     )
 
@@ -275,7 +417,8 @@ fun WeatherScreen(
                         weather = weather,
                         convertTemp = { viewModel.convertTemp(it) },
                         unitSymbol = viewModel.getUnitSymbol(),
-                        getSpeedString = { viewModel.getSpeedString(it) }
+                        getSpeedString = { viewModel.getSpeedString(it) },
+                        getPrecipitationString = { viewModel.getPrecipitationString(it) }
                     )
 
                     Spacer(modifier = Modifier.height(20.dp))
@@ -317,40 +460,102 @@ fun WeatherScreen(
                 }
             }
         }
-
-        // Floating Action Button to share weather dashboard snapshot via native share sheet
-        if (state.uiState is WeatherUiState.Success) {
-            val weather = (state.uiState as WeatherUiState.Success).data
-            GlassShareFloatingButton(
-                onClick = {
-                    HapticUtils.performClick(view)
-                    val tempFormatted = "${viewModel.convertTemp(weather.currentTempC)}${viewModel.getUnitSymbol()}"
-                    ShareUtils.shareWeatherDashboard(
-                        context = context,
-                        view = view,
-                        cityName = state.selectedCity.name,
-                        tempFormatted = tempFormatted,
-                        conditionTitle = weather.condition.title
-                    )
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 20.dp, bottom = navBarPadding + 16.dp)
-            )
-        }
-
-        // Search Modal Dialog
-        if (state.isSearchDialogOpen) {
-            SearchCityDialog(
-                searchQuery = state.searchQuery,
-                onQueryChanged = { viewModel.onSearchQueryChanged(it) },
-                isSearching = state.isSearching,
-                searchResults = state.searchResults,
-                onCitySelected = { viewModel.selectCity(it) },
-                onDismiss = { viewModel.closeSearch() }
-            )
-        }
     }
+
+    // Floating Action Button to share weather dashboard snapshot via native share sheet
+    if (state.uiState is WeatherUiState.Success) {
+        val weather = (state.uiState as WeatherUiState.Success).data
+        GlassShareFloatingButton(
+            onClick = {
+                HapticUtils.performClick(view)
+                val tempFormatted = "${viewModel.convertTemp(weather.currentTempC)}${viewModel.getUnitSymbol()}"
+                ShareUtils.shareWeatherDashboard(
+                    context = context,
+                    view = view,
+                    cityName = state.selectedCity.name,
+                    tempFormatted = tempFormatted,
+                    conditionTitle = weather.condition.title
+                )
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 20.dp, bottom = navBarPadding + 16.dp)
+        )
+    }
+
+    // Search Modal Dialog
+    if (state.isSearchDialogOpen) {
+        SearchCityDialog(
+            searchQuery = state.searchQuery,
+            onQueryChanged = { viewModel.onSearchQueryChanged(it) },
+            isSearching = state.isSearching,
+            searchResults = state.searchResults,
+            isGpsLocating = state.isGpsLocating,
+            onCitySelected = { viewModel.selectCity(it, context) },
+            onUseCurrentLocation = {
+                val locationHelper = LocationHelper(context)
+                if (locationHelper.hasLocationPermission()) {
+                    viewModel.detectAndLoadGpsWeather(context, locationHelper)
+                } else {
+                    locationPermissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        )
+                    )
+                }
+            },
+            onDismiss = { viewModel.closeSearch() }
+        )
+    }
+
+    // Glassmorphism Settings Modal Dialog
+    if (state.isSettingsDialogOpen) {
+        GlassSettingsDialog(
+            blurIntensity = state.blurIntensity,
+            onIntensityChange = { viewModel.updateBlurIntensity(it) },
+            onDismiss = { viewModel.closeSettings() },
+            onTriggerSyncNow = {
+                viewModel.triggerBackgroundSync(context)
+            },
+            lastSyncTimestamp = state.lastSyncTimestamp,
+            cityName = state.selectedCity.name,
+            isSolarThemeAuto = state.isSolarThemeAuto,
+            manualDiurnalPhase = state.manualDiurnalPhase,
+            onSolarThemeAutoChange = { viewModel.setSolarThemeAuto(it) },
+            onManualDiurnalPhaseChange = { viewModel.setManualDiurnalPhase(it) }
+        )
+    }
+
+    // Voice Assistant & Gemini Q&A Modal Dialog
+    if (state.isVoiceAssistantOpen) {
+        GlassVoiceAssistantDialog(
+            cityName = state.selectedCity.name,
+            question = state.voiceQuestion,
+            isListening = state.isListening,
+            isGeminiAnswering = state.isGeminiAnswering,
+            geminiAnswer = state.geminiAnswer,
+            lastAnsweredQuestion = state.lastAnsweredQuestion,
+            onQuestionChange = { viewModel.updateVoiceQuestion(it) },
+            onListeningChange = { viewModel.setListening(it) },
+            onAskGemini = { viewModel.askGemini(it) },
+            onDismiss = { viewModel.closeVoiceAssistant() }
+        )
+    }
+
+    // Severe Weather Alert Details & Safety Directives Dialog
+    if (state.isAlertDetailsOpen && state.selectedDetailAlert != null) {
+        SevereWeatherAlertDetailsDialog(
+            alert = state.selectedDetailAlert!!,
+            onDismiss = {
+                HapticUtils.performTick(view)
+                viewModel.closeAlertDetails()
+            }
+        )
+    }
+}
+}
+}
 }
 
 /**
@@ -362,9 +567,14 @@ fun HeaderBar(
     countryCode: String?,
     isFahrenheit: Boolean,
     isRefreshing: Boolean,
+    isGpsDetected: Boolean = false,
+    isGpsLocating: Boolean = false,
     onSearchClick: () -> Unit,
+    onLocateClick: () -> Unit = {},
     onRefreshClick: () -> Unit,
-    onToggleUnit: () -> Unit
+    onToggleUnit: () -> Unit,
+    onSettingsClick: () -> Unit,
+    onVoiceClick: () -> Unit
 ) {
     val typo = LocalGlassTypography.current
 
@@ -387,16 +597,38 @@ fun HeaderBar(
             Box(
                 modifier = Modifier
                     .size(34.dp)
-                    .background(AccentAmber.copy(alpha = 0.18f), CircleShape)
-                    .border(1.dp, AccentAmber.copy(alpha = 0.35f), CircleShape),
+                    .background(
+                        if (isGpsDetected) AccentCyan.copy(alpha = 0.22f) else AccentAmber.copy(alpha = 0.18f),
+                        CircleShape
+                    )
+                    .border(
+                        1.dp,
+                        if (isGpsDetected) AccentCyan.copy(alpha = 0.45f) else AccentAmber.copy(alpha = 0.35f),
+                        CircleShape
+                    ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.LocationOn,
-                    contentDescription = "Location Pin",
-                    tint = AccentAmber,
-                    modifier = Modifier.size(20.dp)
-                )
+                if (isGpsLocating) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = AccentCyan
+                    )
+                } else if (isGpsDetected) {
+                    Icon(
+                        imageVector = Icons.Rounded.MyLocation,
+                        contentDescription = "GPS Location Active",
+                        tint = AccentCyan,
+                        modifier = Modifier.size(18.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.LocationOn,
+                        contentDescription = "Location Pin",
+                        tint = AccentAmber,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(10.dp))
@@ -411,7 +643,24 @@ fun HeaderBar(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (!countryCode.isNullOrBlank()) {
+                    if (isGpsDetected) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(AccentCyan.copy(alpha = 0.18f), RoundedCornerShape(6.dp))
+                                .border(0.8.dp, AccentCyan.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                        ) {
+                            Text(
+                                text = "GPS",
+                                color = AccentCyan,
+                                style = typo.badgeText.copy(
+                                    fontSize = (9.5f * min(typo.fontScale, 1.3f)).sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                        }
+                    } else if (!countryCode.isNullOrBlank()) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Box(
                             modifier = Modifier
@@ -436,25 +685,118 @@ fun HeaderBar(
 
         Spacer(modifier = Modifier.width(8.dp))
 
-        // Action Buttons (Unit Toggle + Search + Refresh)
+        // Action Buttons (Unit Toggle + Settings + GPS + Search + Refresh)
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Unit Toggle Pill (°C / °F)
+            // Unit Toggle Pill (°C / °F with clear metric/imperial indication)
             GlassCard(
                 cornerRadius = 18.dp,
                 onClick = onToggleUnit,
                 modifier = Modifier.testTag("unit_toggle_button")
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (!isFahrenheit) AccentCyan.copy(alpha = 0.25f) else Color.Transparent)
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "°C",
+                            color = if (!isFahrenheit) AccentCyan else TextMuted,
+                            style = typo.badgeText.copy(
+                                fontWeight = if (!isFahrenheit) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = (11f * min(typo.fontScale, 1.25f)).sp
+                            )
+                        )
+                    }
                     Text(
-                        text = if (isFahrenheit) "°F" else "°C",
-                        color = AccentCyan,
-                        style = typo.badgeText.copy(fontSize = (12.5f * min(typo.fontScale, 1.25f)).sp)
+                        text = "|",
+                        color = GlassBorderStart,
+                        fontSize = 11.sp
+                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isFahrenheit) AccentCyan.copy(alpha = 0.25f) else Color.Transparent)
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "°F",
+                            color = if (isFahrenheit) AccentCyan else TextMuted,
+                            style = typo.badgeText.copy(
+                                fontWeight = if (isFahrenheit) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = (11f * min(typo.fontScale, 1.25f)).sp
+                            )
+                        )
+                    }
+                }
+            }
+
+            // GPS Locate Quick Action Button
+            GlassCard(
+                cornerRadius = 20.dp,
+                onClick = onLocateClick,
+                modifier = Modifier
+                    .size(38.dp)
+                    .testTag("gps_locate_button")
+            ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    if (isGpsLocating) {
+                        CircularProgressIndicator(
+                            color = AccentCyan,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.MyLocation,
+                            contentDescription = "Detect GPS Coordinates",
+                            tint = if (isGpsDetected) AccentCyan else TextSecondary,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
+            }
+
+            // Glassmorphism Blur Settings Button
+            GlassCard(
+                cornerRadius = 20.dp,
+                onClick = onSettingsClick,
+                modifier = Modifier
+                    .size(38.dp)
+                    .testTag("settings_button")
+            ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.Tune,
+                        contentDescription = "Glass Settings",
+                        tint = AccentCyan,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+            }
+
+            // Gemini Voice Assistant Button
+            GlassCard(
+                cornerRadius = 20.dp,
+                onClick = onVoiceClick,
+                modifier = Modifier
+                    .size(38.dp)
+                    .testTag("voice_assistant_button")
+            ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.Mic,
+                        contentDescription = "Ask Gemini Voice Assistant",
+                        tint = AccentCyan,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
@@ -586,6 +928,29 @@ fun HeroWeatherShowcase(
                 )
             }
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Background WorkManager Sync Status Indicator
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color.White.copy(alpha = 0.06f))
+                .padding(horizontal = 8.dp, vertical = 3.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .background(if (weather.isFromCache) AccentAmber else AccentCyan, CircleShape)
+            )
+            Text(
+                text = if (weather.isFromCache) "WorkManager Cached • 15m Periodic" else "Live Telemetry • WorkManager Synced",
+                color = Color.White.copy(alpha = 0.7f),
+                style = typo.subText.copy(fontSize = 10.sp, fontWeight = FontWeight.Normal)
+            )
+        }
     }
 }
 
@@ -595,7 +960,8 @@ fun HeroWeatherShowcase(
 @Composable
 fun SkyIntelligenceBanner(
     briefing: String,
-    onRefreshBriefing: () -> Unit
+    onRefreshBriefing: () -> Unit,
+    onAskVoiceAssistant: () -> Unit
 ) {
     val typo = LocalGlassTypography.current
 
@@ -668,6 +1034,47 @@ fun SkyIntelligenceBanner(
                 text = briefing,
                 style = typo.bodyBriefing
             )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Interactive Voice Assistant Prompt Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White.copy(alpha = 0.08f))
+                    .border(1.dp, AccentCyan.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                    .clickable(onClick = onAskVoiceAssistant)
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Mic,
+                        contentDescription = null,
+                        tint = AccentCyan,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Ask Gemini: \"Will it rain today?\"",
+                        color = TextPrimary,
+                        style = typo.badgeText.copy(
+                            fontSize = (12f * min(typo.fontScale, 1.25f)).sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Rounded.AutoAwesome,
+                    contentDescription = null,
+                    tint = AccentAmber,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
     }
 }
@@ -680,7 +1087,8 @@ fun BentoGridSensorRow(
     weather: CompleteWeatherData,
     convertTemp: (Double) -> Int,
     unitSymbol: String,
-    getSpeedString: (Double) -> String
+    getSpeedString: (Double) -> String,
+    getPrecipitationString: (Double) -> String
 ) {
     val typo = LocalGlassTypography.current
 
@@ -943,7 +1351,7 @@ fun BentoGridSensorRow(
                             )
                         }
                         Text(
-                            text = if (weather.precipitationMm > 0) "${weather.precipitationMm} mm" else "No rain",
+                            text = getPrecipitationString(weather.precipitationMm),
                             style = typo.subText
                         )
                     }
