@@ -1,0 +1,6 @@
+{
+  "name": "SkyGlass Weather",
+  "description": "Ultra-premium dark glassmorphic weather app with dynamic atmospheric visuals, live Open-Meteo meteorology, and Gemini AI Sky Intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
