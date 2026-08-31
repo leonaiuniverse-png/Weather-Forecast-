@@ -297,5 +297,156 @@ class ExampleUnitTest {
         assertTrue(currentLunar.phaseName.isNotBlank())
         assertTrue(currentLunar.nextPhaseSummary.isNotBlank())
     }
+
+    @Test
+    fun weatherAiSummaryRepository_telemetryFormatting_buildsCompleteContext() {
+        val aiRepo = com.example.data.repository.WeatherAiSummaryRepository()
+        val city = com.example.data.model.GeocodingResult(
+            name = "Paris",
+            latitude = 48.8566,
+            longitude = 2.3522,
+            country = "France"
+        )
+        val dummyData = com.example.data.repository.CompleteWeatherData(
+            city = city,
+            currentTempC = 19.5,
+            apparentTempC = 20.0,
+            humidityPct = 60,
+            windSpeedKmh = 14.0,
+            precipitationMm = 0.0,
+            surfacePressureHpa = 1015.0,
+            weatherCode = 1,
+            condition = WeatherRepository.mapWeatherCode(1, isDay = true),
+            todayMinTempC = 12.0,
+            todayMaxTempC = 22.0,
+            currentUvIndex = 4.8,
+            currentPrecipProb = 15,
+            hourlyList = listOf(
+                com.example.data.model.HourlyForecastItem(
+                    hourLabel = "Now",
+                    timeIso = "2026-08-30T14:00",
+                    tempC = 19.5,
+                    apparentTempC = 20.0,
+                    weatherCode = 1,
+                    precipitationProb = 15,
+                    isCurrentHour = true
+                )
+            ),
+            dailyList = listOf(
+                com.example.data.model.DailyForecastItem(
+                    dayLabel = "Today",
+                    dateIso = "2026-08-30",
+                    weatherCode = 1,
+                    minTempC = 12.0,
+                    maxTempC = 22.0,
+                    precipitationProb = 15,
+                    uvIndex = 4.8
+                )
+            ),
+            sunCycle = com.example.data.model.SunCycleInfo(
+                sunriseIso = "2026-08-30T07:00",
+                sunsetIso = "2026-08-30T20:30",
+                sunriseFormatted = "7:00 AM",
+                sunsetFormatted = "8:30 PM",
+                daylightDurationFormatted = "13h 30m",
+                solarProgress = 0.6f,
+                isDaytime = true,
+                solarStatus = "Sunset in 6h 30m"
+            ),
+            aiBriefing = "Pleasant conditions in Paris."
+        )
+
+        val prompt = aiRepo.buildTelemetryPrompt(dummyData, isFahrenheit = false)
+        assertTrue(prompt.contains("Location: Paris, France"))
+        assertTrue(prompt.contains("Current Temperature: 19°C"))
+        assertTrue(prompt.contains("High 22°C / Low 12°C"))
+        assertTrue(prompt.contains("Relative Humidity: 60%"))
+        assertTrue(prompt.contains("Wind: 14 km/h"))
+
+        val fahrenheitPrompt = aiRepo.buildTelemetryPrompt(dummyData, isFahrenheit = true)
+        assertTrue(fahrenheitPrompt.contains("Location: Paris, France"))
+        assertTrue(fahrenheitPrompt.contains("°F"))
+    }
+
+    @Test
+    fun openMeteoForecastStates_structureAndConversion_workCorrectly() {
+        val condition = WeatherRepository.mapWeatherCode(0, isDay = true)
+        val current = com.example.data.model.CurrentWeatherForecastState(
+            timeIso = "2026-08-30T12:00",
+            formattedTime = "12:00 PM",
+            temperatureC = 23.5,
+            apparentTemperatureC = 24.0,
+            humidityPct = 55,
+            precipitationMm = 0.0,
+            precipitationProb = 5,
+            weatherCode = 0,
+            condition = condition,
+            windSpeedKmh = 12.0,
+            surfacePressureHpa = 1013.2,
+            uvIndex = 6.2,
+            isDay = true
+        )
+
+        assertEquals(23.5, current.temperatureC, 0.01)
+        assertEquals(55, current.humidityPct)
+        assertEquals("Clear Sky", current.condition.title)
+
+        val hourlyItem1 = com.example.data.model.HourlyForecastItemState(
+            timeIso = "2026-08-30T13:00",
+            hourLabel = "1 PM",
+            temperatureC = 24.0,
+            weatherCode = 0,
+            condition = condition,
+            precipitationProbability = 10,
+            isCurrentHour = true
+        )
+        val hourlyItem2 = com.example.data.model.HourlyForecastItemState(
+            timeIso = "2026-08-30T14:00",
+            hourLabel = "2 PM",
+            temperatureC = 25.0,
+            weatherCode = 1,
+            condition = WeatherRepository.mapWeatherCode(1, isDay = true),
+            precipitationProbability = 35,
+            isCurrentHour = false
+        )
+
+        val hourlyState = com.example.data.model.HourlyForecastState(
+            hourlyItems = listOf(hourlyItem1, hourlyItem2),
+            next24Hours = listOf(hourlyItem1, hourlyItem2),
+            peakPrecipitationHour = "2 PM",
+            maxProbabilityIn24Hours = 35,
+            minTemperatureC = 24.0,
+            maxTemperatureC = 25.0
+        )
+
+        assertEquals(2, hourlyState.hourlyItems.size)
+        assertEquals("2 PM", hourlyState.peakPrecipitationHour)
+        assertEquals(35, hourlyState.maxProbabilityIn24Hours)
+
+        val dailyItem = com.example.data.model.DailyForecastItemState(
+            dateIso = "2026-08-30",
+            dayLabel = "Today",
+            formattedDate = "Aug 30",
+            weatherCode = 0,
+            condition = condition,
+            minTemperatureC = 16.0,
+            maxTemperatureC = 26.0,
+            precipitationProbabilityMax = 20,
+            uvIndexMax = 7.0,
+            isToday = true
+        )
+
+        val dailyState = com.example.data.model.DailyForecastState(
+            dailyItems = listOf(dailyItem),
+            weeklyMinTemperatureC = 16.0,
+            weeklyMaxTemperatureC = 26.0,
+            dominantCondition = condition,
+            rainyDaysCount = 0
+        )
+
+        assertEquals(1, dailyState.dailyItems.size)
+        assertEquals(16.0, dailyState.weeklyMinTemperatureC, 0.01)
+        assertEquals(26.0, dailyState.weeklyMaxTemperatureC, 0.01)
+    }
 }
 

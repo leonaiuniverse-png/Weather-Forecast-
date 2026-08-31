@@ -224,7 +224,6 @@ fun WeatherScreen(
                     cityName = state.selectedCity.name,
                     countryCode = state.selectedCity.countryCode ?: state.selectedCity.country,
                     isFahrenheit = state.isFahrenheit,
-                    isRefreshing = state.isRefreshing,
                     isGpsDetected = state.isGpsDetected,
                     isGpsLocating = state.isGpsLocating,
                     onSearchClick = {
@@ -244,11 +243,6 @@ fun WeatherScreen(
                                 )
                             )
                         }
-                    },
-                    onRefreshClick = {
-                        HapticUtils.performTick(view)
-                        viewModel.refresh(context)
-                        viewModel.triggerBackgroundSync(context)
                     },
                     onToggleUnit = {
                         HapticUtils.performTick(view)
@@ -400,10 +394,6 @@ fun WeatherScreen(
                     // 3. AI "Sky Intelligence" Glass Banner
                     SkyIntelligenceBanner(
                         briefing = weather.aiBriefing,
-                        onRefreshBriefing = {
-                            HapticUtils.performTick(view)
-                            viewModel.refresh(context)
-                        },
                         onAskVoiceAssistant = {
                             HapticUtils.performClick(view)
                             viewModel.openVoiceAssistant()
@@ -566,12 +556,10 @@ fun HeaderBar(
     cityName: String,
     countryCode: String?,
     isFahrenheit: Boolean,
-    isRefreshing: Boolean,
     isGpsDetected: Boolean = false,
     isGpsLocating: Boolean = false,
     onSearchClick: () -> Unit,
     onLocateClick: () -> Unit = {},
-    onRefreshClick: () -> Unit,
     onToggleUnit: () -> Unit,
     onSettingsClick: () -> Unit,
     onVoiceClick: () -> Unit
@@ -818,32 +806,6 @@ fun HeaderBar(
                     )
                 }
             }
-
-            // Refresh Button
-            GlassCard(
-                cornerRadius = 20.dp,
-                onClick = onRefreshClick,
-                modifier = Modifier
-                    .size(38.dp)
-                    .testTag("refresh_button")
-            ) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    if (isRefreshing) {
-                        CircularProgressIndicator(
-                            color = AccentCyan,
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Rounded.Refresh,
-                            contentDescription = "Refresh Weather",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
-                }
-            }
         }
     }
 }
@@ -960,7 +922,6 @@ fun HeroWeatherShowcase(
 @Composable
 fun SkyIntelligenceBanner(
     briefing: String,
-    onRefreshBriefing: () -> Unit,
     onAskVoiceAssistant: () -> Unit
 ) {
     val typo = LocalGlassTypography.current
@@ -989,40 +950,25 @@ fun SkyIntelligenceBanner(
             // Header Row with Pulsing Sparkle & Badge
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    PulsingSparkle(color = AccentCyan)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "SKY INTELLIGENCE",
-                        style = typo.sectionHeader,
-                        color = AccentCyan
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Box(
-                        modifier = Modifier
-                            .background(AccentCyan.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "GEMINI FLASH",
-                            color = Color.White.copy(alpha = 0.85f),
-                            style = typo.badgeText.copy(fontSize = (8.5f * min(typo.fontScale, 1.3f)).sp)
-                        )
-                    }
-                }
-
-                IconButton(
-                    onClick = onRefreshBriefing,
-                    modifier = Modifier.size(28.dp)
+                PulsingSparkle(color = AccentCyan)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "SKY INTELLIGENCE",
+                    style = typo.sectionHeader,
+                    color = AccentCyan
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Box(
+                    modifier = Modifier
+                        .background(AccentCyan.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Refresh,
-                        contentDescription = "Regenerate Briefing",
-                        tint = AccentCyan.copy(alpha = 0.8f),
-                        modifier = Modifier.size(16.dp)
+                    Text(
+                        text = "GEMINI FLASH",
+                        color = Color.White.copy(alpha = 0.85f),
+                        style = typo.badgeText.copy(fontSize = (8.5f * min(typo.fontScale, 1.3f)).sp)
                     )
                 }
             }

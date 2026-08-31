@@ -11,13 +11,19 @@ import com.example.data.alert.AlertStateManager
 import com.example.data.db.WeatherCacheEntity
 import com.example.data.db.WeatherDatabase
 import com.example.data.model.AlertSeverity
+import com.example.data.model.CurrentWeatherForecastState
 import com.example.data.model.DailyForecastItem
+import com.example.data.model.DailyForecastItemState
+import com.example.data.model.DailyForecastState
 import com.example.data.model.ForecastResponse
 import com.example.data.model.GeocodingResult
 import com.example.data.model.HourlyForecastItem
+import com.example.data.model.HourlyForecastItemState
+import com.example.data.model.HourlyForecastState
 import com.example.data.model.SevereWeatherAlert
 import com.example.data.model.WeatherConditionInfo
 import com.example.data.model.WeatherConditionType
+import com.example.data.model.WeatherForecastState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -51,7 +57,83 @@ data class CompleteWeatherData(
     val lastSyncTimestamp: Long = System.currentTimeMillis(),
     val isFromCache: Boolean = false,
     val syncSource: String = "FOREGROUND"
-)
+) {
+    /**
+     * Converts the domain CompleteWeatherData into the structured UI forecast state.
+     */
+    fun toWeatherForecastState(): WeatherForecastState {
+        val currentState = CurrentWeatherForecastState(
+            timeIso = sunCycle.sunriseIso,
+            formattedTime = "Now",
+            temperatureC = currentTempC,
+            apparentTemperatureC = apparentTempC,
+            humidityPct = humidityPct,
+            precipitationMm = precipitationMm,
+            precipitationProb = currentPrecipProb,
+            weatherCode = weatherCode,
+            condition = condition,
+            windSpeedKmh = windSpeedKmh,
+            surfacePressureHpa = surfacePressureHpa,
+            uvIndex = currentUvIndex,
+            isDay = condition.isDay
+        )
+
+        val hourlyItemStates = hourlyList.map { item ->
+            HourlyForecastItemState(
+                timeIso = item.timeIso,
+                hourLabel = item.hourLabel,
+                temperatureC = item.tempC,
+                apparentTemperatureC = item.apparentTempC,
+                weatherCode = item.weatherCode,
+                condition = WeatherRepository.mapWeatherCode(item.weatherCode, isDay = condition.isDay),
+                precipitationProbability = item.precipitationProb,
+                isCurrentHour = item.isCurrentHour
+            )
+        }
+
+        val hourlyState = HourlyForecastState(
+            hourlyItems = hourlyItemStates,
+            next24Hours = hourlyItemStates.take(24),
+            peakPrecipitationHour = hourlyItemStates.maxByOrNull { it.precipitationProbability }?.hourLabel,
+            maxProbabilityIn24Hours = hourlyItemStates.take(24).maxOfOrNull { it.precipitationProbability } ?: 0,
+            minTemperatureC = hourlyItemStates.minOfOrNull { it.temperatureC } ?: todayMinTempC,
+            maxTemperatureC = hourlyItemStates.maxOfOrNull { it.temperatureC } ?: todayMaxTempC
+        )
+
+        val dailyItemStates = dailyList.mapIndexed { index, item ->
+            DailyForecastItemState(
+                dateIso = item.dateIso,
+                dayLabel = item.dayLabel,
+                formattedDate = item.dateIso,
+                weatherCode = item.weatherCode,
+                condition = WeatherRepository.mapWeatherCode(item.weatherCode, isDay = true),
+                minTemperatureC = item.minTempC,
+                maxTemperatureC = item.maxTempC,
+                precipitationProbabilityMax = item.precipitationProb,
+                uvIndexMax = item.uvIndex,
+                isToday = index == 0
+            )
+        }
+
+        val dailyState = DailyForecastState(
+            dailyItems = dailyItemStates,
+            weeklyMinTemperatureC = dailyItemStates.minOfOrNull { it.minTemperatureC } ?: todayMinTempC,
+            weeklyMaxTemperatureC = dailyItemStates.maxOfOrNull { it.maxTemperatureC } ?: todayMaxTempC,
+            dominantCondition = condition,
+            rainyDaysCount = dailyItemStates.count { it.precipitationProbabilityMax >= 50 }
+        )
+
+        return WeatherForecastState(
+            current = currentState,
+            hourly = hourlyState,
+            daily = dailyState,
+            sunCycle = sunCycle,
+            location = city,
+            activeAlerts = activeAlerts,
+            lastUpdatedTimestamp = lastSyncTimestamp
+        )
+    }
+}
 
 class WeatherRepository {
     private val openMeteo = ApiClient.openMeteoService

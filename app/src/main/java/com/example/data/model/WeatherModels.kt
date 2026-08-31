@@ -78,6 +78,107 @@ data class DailyWeatherDto(
 
 // UI Domain Models
 
+/**
+ * Represents the current weather forecast state processed from Open-Meteo for UI display.
+ */
+data class CurrentWeatherForecastState(
+    val timeIso: String,
+    val formattedTime: String,
+    val temperatureC: Double,
+    val apparentTemperatureC: Double,
+    val humidityPct: Int,
+    val precipitationMm: Double,
+    val precipitationProb: Int = 0,
+    val weatherCode: Int,
+    val condition: WeatherConditionInfo,
+    val windSpeedKmh: Double,
+    val windDirectionDegrees: Int = 0,
+    val surfacePressureHpa: Double,
+    val uvIndex: Double = 0.0,
+    val isDay: Boolean = true,
+    val dewPointC: Double? = null,
+    val cloudCoverPct: Int? = null,
+    val visibilityMeters: Double? = null
+)
+
+/**
+ * Represents an individual hourly forecast point formatted for Compose strips, charts, and pill items.
+ */
+data class HourlyForecastItemState(
+    val timeIso: String,
+    val hourLabel: String, // e.g., "Now", "2 PM", "15:00"
+    val temperatureC: Double,
+    val apparentTemperatureC: Double = temperatureC,
+    val weatherCode: Int,
+    val condition: WeatherConditionInfo,
+    val precipitationProbability: Int, // 0 - 100%
+    val precipitationMm: Double = 0.0,
+    val windSpeedKmh: Double = 0.0,
+    val humidityPct: Int = 0,
+    val uvIndex: Double = 0.0,
+    val isDay: Boolean = true,
+    val isCurrentHour: Boolean = false
+)
+
+/**
+ * Encapsulates the entire hourly forecast collection and metadata for the UI.
+ */
+data class HourlyForecastState(
+    val hourlyItems: List<HourlyForecastItemState> = emptyList(),
+    val next24Hours: List<HourlyForecastItemState> = emptyList(),
+    val peakPrecipitationHour: String? = null,
+    val maxProbabilityIn24Hours: Int = 0,
+    val minTemperatureC: Double = 0.0,
+    val maxTemperatureC: Double = 0.0
+)
+
+/**
+ * Represents a single day's forecast state with thermal spans, solar metrics, and weather condition.
+ */
+data class DailyForecastItemState(
+    val dateIso: String,
+    val dayLabel: String, // e.g., "Today", "Tomorrow", "Mon", "Tue"
+    val formattedDate: String, // e.g., "Aug 31", "31/08"
+    val weatherCode: Int,
+    val condition: WeatherConditionInfo,
+    val minTemperatureC: Double,
+    val maxTemperatureC: Double,
+    val precipitationProbabilityMax: Int, // 0 - 100%
+    val precipitationSumMm: Double = 0.0,
+    val uvIndexMax: Double = 0.0,
+    val sunriseIso: String? = null,
+    val sunsetIso: String? = null,
+    val sunriseFormatted: String? = null,
+    val sunsetFormatted: String? = null,
+    val daylightDurationMinutes: Int? = null,
+    val isToday: Boolean = false
+)
+
+/**
+ * Encapsulates the multi-day forecast sequence, weekly high/low temperature bounds, and summary trends.
+ */
+data class DailyForecastState(
+    val dailyItems: List<DailyForecastItemState> = emptyList(),
+    val weeklyMinTemperatureC: Double = 0.0,
+    val weeklyMaxTemperatureC: Double = 0.0,
+    val dominantCondition: WeatherConditionInfo? = null,
+    val rainyDaysCount: Int = 0,
+    val highestUvDay: DailyForecastItemState? = null
+)
+
+/**
+ * Unified UI forecast state aggregating Current, Hourly, and Daily forecast dimensions from Open-Meteo.
+ */
+data class WeatherForecastState(
+    val current: CurrentWeatherForecastState,
+    val hourly: HourlyForecastState,
+    val daily: DailyForecastState,
+    val sunCycle: SunCycleInfo,
+    val location: GeocodingResult,
+    val activeAlerts: List<SevereWeatherAlert> = emptyList(),
+    val lastUpdatedTimestamp: Long = System.currentTimeMillis()
+)
+
 data class LunarPhaseInfo(
     val phaseName: String,
     val illuminationPct: Int, // 0 to 100
